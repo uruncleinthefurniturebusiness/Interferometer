@@ -1,0 +1,210 @@
+{
+  "main": {
+    "id": "0ea038b7cf0c4e6f",
+    "type": "split",
+    "children": [
+      {
+        "id": "7d8d840f4e39e5f9",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "43a767b5d5b9c12e",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Interferometer Information.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Interferometer Information"
+            }
+          },
+          {
+            "id": "20c3cd747ac39ba5",
+            "type": "leaf",
+            "state": {
+              "type": "image",
+              "state": {
+                "file": "Media/Pasted image 20260727111202.png"
+              },
+              "icon": "lucide-image",
+              "title": "Pasted image 20260727111202"
+            }
+          }
+        ],
+        "currentTab": 1
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "a3cbb73232deb542",
+    "type": "split",
+    "children": [
+      {
+        "id": "2145c47db6f8d746",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "bc18e2e791e72352",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "b8dda6dd95ab5fa5",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "d50d0c15318457ee",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 200
+  },
+  "right": {
+    "id": "41b902f872996503",
+    "type": "split",
+    "children": [
+      {
+        "id": "66feb6029e7d2f88",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "b2ec6798266ea2cc",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "Media/Pasted image 20260727111202.png",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for Pasted image 20260727111202"
+            }
+          },
+          {
+            "id": "56b90fb9034e93c3",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "Media/Pasted image 20260727111202.png",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from Pasted image 20260727111202"
+            }
+          },
+          {
+            "id": "05ef84c16bdbc416",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "1457f0346bcd36cd",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "bc547c9f242bb709",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "Media/Pasted image 20260727111202.png",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of Pasted image 20260727111202"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "20c3cd747ac39ba5",
+  "lastOpenFiles": [
+    "Media/Michelson Interferometer II.png",
+    "Interferometer Information.md",
+    "Project Brief.md",
+    "Media/Michelson Interferometer Top-down.png",
+    "Media/Pasted image 20260727111202.png",
+    "Media/Mach-Zehnder Interferometer.png",
+    "Media/Interferometer basic diagram.png",
+    "Media"
+  ]
+}
