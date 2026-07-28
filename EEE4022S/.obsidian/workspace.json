@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Interferometer Information.md",
+                "file": "Meeting Notes/Meeting 1.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Interferometer Information"
+              "title": "Meeting 1"
             }
           },
           {
@@ -33,8 +33,7 @@
               "title": "Pasted image 20260727111202"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       }
     ],
     "direction": "vertical"
@@ -196,13 +195,15 @@
       "bases:Create new base": false
     }
   },
-  "active": "20c3cd747ac39ba5",
+  "active": "43a767b5d5b9c12e",
   "lastOpenFiles": [
-    "Media/Michelson Interferometer II.png",
-    "Interferometer Information.md",
     "Project Brief.md",
-    "Media/Michelson Interferometer Top-down.png",
+    "Meeting Notes/Meeting 1.md",
+    "Meeting Notes",
+    "Interferometer Information.md",
     "Media/Pasted image 20260727111202.png",
+    "Media/Michelson Interferometer II.png",
+    "Media/Michelson Interferometer Top-down.png",
     "Media/Mach-Zehnder Interferometer.png",
     "Media/Interferometer basic diagram.png",
     "Media"

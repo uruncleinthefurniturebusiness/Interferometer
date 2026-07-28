@@ -4,8 +4,7 @@ The Department of Astronomy at UCT would like to assemble a **two-antenna interf
 
 Already existing at the local observatory in Observatory are two dish antennas separated by a baseline distance of about 20 metres. These operate at 1420 MHz, capturing signals hydrogen gas, and suitable for radio imaging. There is an existing data capture system that allows monitoring of the received frequency spectrum over a bandwidth of 50 MHz, _**but it does not have an interferometric mode.**_
 
-The _**aim of this project is to assemble an interferometric data capture system that can record the RF signals from the two antennas and then to implement signal processing software to perform interferometric data processing**_. The data capture system would be located at the antenna site  
-in Observatory, and the data should be accessible via an internet link to allow remote processing and display.
+The _**aim of this project is to assemble an interferometric data capture system that can record the RF signals from the two antennas and then to implement signal processing software to perform interferometric data processing**_. The data capture system would be located at the antenna site in Observatory, and the data should be accessible via an internet link to allow remote processing and display.
 
 Each antenna has two outputs (dual polarisation outputs) so potentially, four channels could be simultaneously recorded, although a minimum of two (one from each antenna) would be sufficient to perform basic interferometric imaging.  
 A preliminary investigation indicates that a low-cost data capture system can be assembled using software defined radio (SDR) hardware. [https://wirelesspi.com/top-5-software-defined-radios-sdr-for-rf-experimentation/](https://wirelesspi.com/top-5-software-defined-radios-sdr-for-rf-experimentation/)
