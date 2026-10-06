@@ -17,3 +17,15 @@ One Julia file that takes the Pluto from power-on to timestamped visibilities. R
 | `sim` | no | Simulated drift-scan observation through the same correlator (Sun disk, point, Gaussian; optional HI line, DC offset, instrument phase; dish diameter sets area and beam) |
 
 Notes and design reasoning are in the Obsidian vault (`Design/V1 Code Explained.md`, `V1.md`). Visibility convention: V = x1 * conj(x2); positive phase means the signal reaches channel 2 later. Keep captures outside the OneDrive folder (default `C:/PlutoCaptures`).
+
+## bt_capture.jl (2.4 GHz Bluetooth capture)
+Records the 2.4 GHz band at 2.5 Msps to disk for post-processing: `julia -t 3 bt_capture.jl` (10 minutes of BLE advertising channel 38, RX1, raw int16 I/Q). Options `channel=37|38|39`, `freq=`, `minutes=`, `rx=1|2|both`, `gain=`, `out_dir=`; `julia bt_capture.jl look path=<file>.cs16` summarises a finished file. About 6 GB per stored channel for 10 minutes. Details in the vault note `Design/Bluetooth Capture.md`.
+
+## tone and delayfit (splitter test)
+`julia -t 3 V1.jl tone tag=A tn_sweep="-1000:200:1000"` measures a generator tone on both channels (coherence, phase, spur check) and prompts for each sweep frequency; `julia V1.jl delayfit tag=A tn_tag2=B` fits the delay from the phase slope and compares it with the known cable change. Procedure: vault note `Design/Splitter Test Procedure.md`.
+
+## bt_process.jl (decode BLE advertising packets from a bt_capture file)
+`julia bt_process.jl path=<file>_rx1.cs16 channel=38` finds bursts, demodulates GFSK, syncs on the BLE access address, checks the CRC-24 and lists advertisers (writes `<file>_packets.csv`). `julia bt_process.jl selftest` runs a synthetic test. The whitening and CRC conventions were validated on real over-the-air packets. Details: vault note `Design/Bluetooth Capture.md`.
+
+## bt_fft.jl (spectra of a bt_capture file)
+`julia bt_fft.jl path=<file>_rx1.cs16 [n=1000000 start=<sample>]` writes an average and max-hold spectrum, a waterfall and a close-up of the strongest decoded packet as PNGs (plus the spectrum as CSV). `n` and `start` (or `start_s`, `dur_s`) select a portion; the whole file takes about 3 minutes. See the vault note `Design/Bluetooth Capture.md`.

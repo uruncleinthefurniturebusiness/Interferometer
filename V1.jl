@@ -107,6 +107,12 @@ Base.@kwdef mutable struct Config
     sim_line_amp::Float64   = 0.05          # peak line power relative to the receiver-noise PSD
     sim_line_vis::Float64   = 0.0           # normalized visibility of the line (0 = resolved out: autos only)
     sim_seed::Int           = 1
+    # ---- `tone` / `delayfit` modes: generator tone through a splitter, delay from the phase-versus-frequency slope ----
+    tn_sweep::String        = ""            # e.g. "-1000:200:1000": baseband offsets in kHz from the LO; prompts you to set the generator at each
+    tn_cable_m::Float64     = 0.0           # extra cable on RX2 relative to RX1 for this run (m); stored in the CSV, used by delayfit
+    tn_vf::Float64          = 0.66          # cable velocity factor (measure it, or use the datasheet value)
+    tn_file::String         = ""            # results CSV (default: <out_dir>/tone_results.csv)
+    tn_tag2::String         = ""            # delayfit: second configuration tag to compare against `tag`
 end
 
 function parse_cli(args::Vector{String})
@@ -129,12 +135,14 @@ function parse_cli(args::Vector{String})
 end
 
 usage() = """
-V1.jl modes: selftest | check | rate | run | show | sim
+V1.jl modes: selftest | check | rate | run | show | sim | tone | delayfit
   julia -t 3 V1.jl check    [f_lo=1420e6 fs=2.5e6 gain1=40 gain2=40 addr=auto]
   julia -t 3 V1.jl rate     [duration_s=60 tone=true]
   julia -t 3 V1.jl run      [duration_s=600 t_int=1 nfft=4096 window=hann]
   julia V1.jl show          [path=<file>.vis]
   julia V1.jl selftest
+  julia -t 3 V1.jl tone     [duration_s=10 tag=A tn_cable_m=0 tn_sweep="-1000:200:1000"]   (generator tone through a splitter)
+  julia V1.jl delayfit      [tag=A tn_tag2=B]                                              (delay from the phase slope)
   julia -t 3 V1.jl sim      [sim_model=sun sim_hours=6 sim_snr_db=-20 sim_az_deg=90 sim_dec_deg=0 ...]   (no hardware)
 See the header of V1.jl for all options."""
 
@@ -475,7 +483,9 @@ function consume!(q::Channel{Block}, cfg::Config, fs_eff::Float64, on_record::Fu
     fsc = 0.0f0
     nrec = 0; nblk = 0; nshort = 0; nqfull = 0
     blk_secs = bufsize / fs_eff
+    proc = Float64[]                       # per-block processing time (ms), for the queue diagnostics
     for b in q
+        tproc = time_ns()
         fsc == 0.0f0 && (fsc = detect_fullscale(b))
         x1 = to_complex(b.i1, b.q1, fsc); x2 = to_complex(b.i2, b.q2, fsc)
         s1 = chan_stats(x1); s2 = chan_stats(x2)
@@ -497,8 +507,10 @@ function consume!(q::Channel{Block}, cfg::Config, fs_eff::Float64, on_record::Fu
             nrec += 1
             reset!(fx)
         end
+        push!(proc, (time_ns() - tproc) / 1e6)
     end
-    return (records = nrec, blocks = nblk, short = nshort, qfull = nqfull, fullscale = fsc)
+    return (records = nrec, blocks = nblk, short = nshort, qfull = nqfull, fullscale = fsc,
+            proc_med_ms = isempty(proc) ? NaN : median(proc), proc_max_ms = isempty(proc) ? NaN : maximum(proc))
 end
 
 # ---------------------------------------------------------------------
@@ -692,9 +704,9 @@ function mode_check(cfg::Config)
         for (lo_b, hi_b) in ((1, 4), (5, 20), (21, 100), (101, 500), (501, cfg.nfft ÷ 2 - 1))
             idx = filter(i -> 1 <= i <= cfg.nfft, vcat((c - hi_b):(c - lo_b), (c + lo_b):(c + hi_b)))
             isempty(idx) && continue
-            r = sum(rec.V[idx]) / sqrt(sum(rec.P1[idx]) * sum(rec.P2[idx]))
+            rho_b = sum(rec.V[idx]) / sqrt(sum(rec.P1[idx]) * sum(rec.P2[idx]))
             @printf("  %4d..%-4d bins (%7.1f..%-7.1f kHz): |rho| = %.4f  (noise floor ~ %.4f)\n", lo_b, hi_b,
-                    lo_b * fs / cfg.nfft / 1e3, hi_b * fs / cfg.nfft / 1e3, abs(r), 1 / sqrt(fx.nseg * length(idx)))
+                    lo_b * fs / cfg.nfft / 1e3, hi_b * fs / cfg.nfft / 1e3, abs(rho_b), 1 / sqrt(fx.nseg * length(idx)))
         end
         @printf("Noise floor for |rho| with this many segments: about %.4f per bin, %.5f for the whole band\n",
                 1 / sqrt(fx.nseg), 1 / sqrt(fx.nseg * cfg.nfft))
@@ -784,21 +796,46 @@ function mode_run(cfg::Config)
     bind(q, task)
     t_wall = time()
     summary = nothing
-    try
-        for _ in 1:cfg.skip_blocks; read_block!(r, 0); end
-        for i in 1:nblk
-            full = Base.n_avail(q) >= cfg.queue_depth
-            put!(q, read_block!(r, (i - 1) * bufsize; qfull = full))
-            Threads.nthreads() == 1 && yield()
+    backlog = Int[]; t_read = Float64[]; t_put = Float64[]      # diagnostics: queue depth, time in refill, time waiting to enqueue
+    # The capture loop runs in its own task. Its blocking libiio read would otherwise tie up the main thread, and the
+    # processing task could not run there (it was observed to leave the queue about 90% full); with capture on a
+    # worker thread and the main thread only waiting, the other threads stay free for processing.
+    stop = Threads.Atomic{Bool}(false)
+    producer = Threads.@spawn begin
+        err = nothing
+        try
+            for _ in 1:cfg.skip_blocks; read_block!(r, 0); end
+            for i in 1:nblk
+                stop[] && break
+                push!(backlog, Base.n_avail(q))
+                full = backlog[end] >= cfg.queue_depth
+                t0 = time(); blk = read_block!(r, (i - 1) * bufsize; qfull = full); t1 = time()
+                put!(q, blk); t2 = time()
+                push!(t_read, t1 - t0); push!(t_put, t2 - t1)
+                Threads.nthreads() == 1 && yield()
+            end
+        catch e
+            err = e
         end
-    catch e
-        e isa InterruptException ? println("\nInterrupted; finishing the integration in progress...") :
-                                   (close_radio!(r); close(vis_io); rethrow())
-    finally
-        close_radio!(r)
+        err
     end
+    cap_err = nothing
+    try
+        cap_err = fetch(producer)
+    catch e
+        if e isa InterruptException
+            println("\nInterrupted; finishing the integration in progress...")
+            stop[] = true
+            cap_err = fetch(producer)
+        else
+            stop[] = true
+            cap_err = e
+        end
+    end
+    close_radio!(r)
     close(q)
     summary = fetch(task)
+    cap_err === nothing || println("CAPTURE ERROR: ", cap_err, "  (the output below covers only the data captured before it)")
     wall = time() - t_wall
     close(vis_io)
     raw_ios === nothing || foreach(close, raw_ios)
@@ -808,6 +845,11 @@ function mode_run(cfg::Config)
             "(expected $(round(nblk * bufsize / fs, digits = 1)) s).")
     summary.short > 0 && println("WARNING: $(summary.short) short read(s).")
     summary.qfull > 0 && println("WARNING: processing queue was full $(summary.qfull) time(s); the host fell behind.")
+    if !isempty(backlog)
+        @printf("Diagnostics: queue backlog max %d (of %d), mean %.1f; refill time median %.0f ms, max %.0f ms (block = %.0f ms); wait to enqueue max %.0f ms\n",
+                maximum(backlog), cfg.queue_depth, mean(backlog), 1e3median(t_read), 1e3maximum(t_read), 1e3bufsize / fs, 1e3maximum(t_put))
+        @printf("             processing time per block: median %.1f ms, max %.1f ms (thread count %d)\n", summary.proc_med_ms, summary.proc_max_ms, Threads.nthreads())
+    end
 end
 
 function mode_show(cfg::Config)
@@ -932,6 +974,17 @@ function mode_selftest(cfg::Config)
     aok = abs(ant.area - 0.55 * pi * 25) < 1e-9 && abs(ant.hpbw_deg - rad2deg(1.15 * C_LIGHT / 1420e6 / 10)) < 1e-9 && ant.fixed
     @printf("  D = 10 m, eff 0.55: A_e = %.1f m^2, HPBW = %.2f deg, fixed = %s\n", ant.area, ant.hpbw_deg, ant.fixed)
     println("  ", aok ? "PASS" : "FAIL"); ok &= aok
+
+    println("== Test 6: delay from the phase-versus-frequency slope (synthetic tone sweep with phase wrapping)")
+    rngt = MersenneTwister(7)
+    fb6 = collect(-1.0e6:2.0e5:1.0e6)
+    for tau_true in (13.0, 50.5, 101.0)
+        ph6 = [rad2deg(wrap_pi(deg2rad(30.0 + 360 * tau_true * 1e-9 * f + 0.6 * randn(rngt)))) for f in fb6]
+        fd = fit_delay(fb6, ph6, fill(0.6, length(fb6)))
+        dok = abs(fd.tau_ns - tau_true) < max(0.5, 3 * fd.tau_err_ns) && abs(fd.phi0 - 30.0) < 2.0
+        @printf("  true %.1f ns: fitted %.2f +- %.2f ns, phase at LO %.1f deg  %s\n", tau_true, fd.tau_ns, fd.tau_err_ns, fd.phi0, dok ? "PASS" : "FAIL")
+        ok &= dok
+    end
 
     println("\n", ok ? "SELFTEST PASSED" : "SELFTEST FAILED")
     return ok
@@ -1188,6 +1241,163 @@ end
 mode_sim(cfg::Config) = (simulate_observation(cfg).pass || println("Sim did not pass its own consistency check."); nothing)
 
 # ---------------------------------------------------------------------
+# Tone through a splitter (`tone`) and delay from the phase slope (`delayfit`). The generator signal is split to both
+# receive inputs through cables of known length difference. A completely coherent tone gives |rho| close to 1 (limited
+# only by the SNR), and its RX1-RX2 phase is 2*pi*f*tau + a fixed instrument phase. The ABSOLUTE phase cannot be
+# predicted from a cable length (at 1.42 GHz 1 mm of cable is about 2.5 degrees and the instrument phase is unknown),
+# so the checks are (1) the phase STABILITY, (2) the SLOPE of phase against frequency, which gives the total delay
+# tau, and (3) the DIFFERENCE in delay between two cable configurations, which must equal the extra length / (vf*c).
+# Convention as everywhere: V = x1*conj(x2); positive phase = signal reaches RX2 later.
+# ---------------------------------------------------------------------
+function circ_stats(deg::Vector{Float64})
+    z = mean(cis.(deg2rad.(deg)))
+    return (mean = rad2deg(angle(z)), std = rad2deg(sqrt(max(-2 * log(max(abs(z), 1e-12)), 0.0))), R = abs(z))
+end
+
+function measure_tone(r::Radio, cfg::Config, rb, secs::Float64)
+    nsegb, bufsize = block_geometry(cfg)
+    fs = Float64(rb.fs1); flo = Float64(rb.lo)
+    nblk = max(2, ceil(Int, secs * fs / bufsize))
+    for _ in 1:cfg.skip_blocks; read_block!(r, 0); end
+    fx = FX(cfg.nfft, nsegb, cfg.window)
+    ph = Float64[]; fts = Float64[]; fsc = 0.0f0; clip = 0.0
+    for i in 1:nblk
+        b = read_block!(r, 0)
+        fsc == 0.0f0 && (fsc = detect_fullscale(b))
+        x1 = to_complex(b.i1, b.q1, fsc); x2 = to_complex(b.i2, b.q2, fsc)
+        s1 = chan_stats(x1); s2 = chan_stats(x2)
+        clip = max(clip, s1.clip, s2.clip)
+        f1, p1 = tone_fit(x1, fs); f2, p2 = tone_fit(x2, fs)
+        push!(fts, f1); push!(ph, rad2deg(wrap_pi(p1 - p2)))      # both phases are at the same sample, so the frequency error cancels
+        accumulate!(fx, x1, x2); fx.blocks += 1
+        fx.pw1 += s1.power; fx.pw2 += s2.power
+    end
+    fx.t_first = fx.t_last = now(UTC)
+    rec = finalize!(fx)
+    fbb = median(fts)
+    binw = fs / cfg.nfft
+    kt = clamp(round(Int, fbb / binw) + cfg.nfft ÷ 2 + 1, 5, cfg.nfft - 4)
+    win = (kt - 3):(kt + 3)
+    c = cfg.nfft ÷ 2 + 1
+    keep = trues(cfg.nfft); keep[max(1, c - cfg.dc_mask):min(cfg.nfft, c + cfg.dc_mask)] .= false; keep[win] .= false
+    fl1 = median(Float64.(rec.P1[keep])); fl2 = median(Float64.(rec.P2[keep]))
+    n1 = 7fl1; n2 = 7fl2
+    t1 = max(sum(Float64.(rec.P1[win])) - n1, 1e-30); t2 = max(sum(Float64.(rec.P2[win])) - n2, 1e-30)
+    rho = sum(rec.V[win]) / sqrt(sum(Float64.(rec.P1[win])) * sum(Float64.(rec.P2[win])))
+    rho_exp = sqrt(t1 * t2) / sqrt((t1 + n1) * (t2 + n2))
+    cs = circ_stats(ph)
+    P1k = Float64.(rec.P1); P1k[.!keep] .= -Inf
+    ks = argmax(P1k)
+    spur_db = 10log10(max(P1k[ks] - fl1, 1e-30) / max(maximum(Float64.(rec.P1[win])) - fl1, 1e-30))
+    spur_khz = (ks - cfg.nfft ÷ 2 - 1) * binw / 1e3
+    return (spur_db = spur_db, spur_khz = spur_khz, f_bb = fbb, f_true = flo + fbb, f_lo = flo, phase = cs.mean, phase_std = cs.std, rho = abs(rho), rho_phase = rad2deg(angle(rho)),
+            rho_exp = rho_exp, snr1_db = 10log10(t1 / n1), snr2_db = 10log10(t2 / n2), nblk = nblk, clip = clip, drift = rad2deg(wrap_pi(deg2rad(ph[end] - ph[1]))))
+end
+
+parse_sweep(s::String) = (p = parse.(Float64, split(s, ':')); length(p) == 3 ? collect(p[1]:p[2]:p[3]) : error("tn_sweep must be start:step:stop in kHz"))
+
+const TONE_HEADER = "utc,tag,f_lo_hz,f_bb_hz,f_true_hz,phase_deg,phase_std_deg,rho,rho_expected,snr1_db,snr2_db,gain1_db,gain2_db,cable_m,vf,blocks"
+
+# Fit phase(f) = phi0 + 360*tau*f over baseband frequency f (Hz), unwrapping in frequency order. Returns delay in ns.
+function fit_delay(fbb::Vector{Float64}, phase_deg::Vector{Float64}, std_deg::Vector{Float64})
+    o = sortperm(fbb); f = fbb[o]; ph = copy(phase_deg[o]); sd = max.(std_deg[o], 0.2)
+    for i in 2:length(ph)
+        ph[i] = ph[i-1] + rad2deg(wrap_pi(deg2rad(ph[i] - ph[i-1])))
+    end
+    w = 1 ./ sd .^ 2
+    fm = sum(w .* f) / sum(w); pm = sum(w .* ph) / sum(w)
+    slope = sum(w .* (f .- fm) .* (ph .- pm)) / sum(w .* (f .- fm) .^ 2)         # degrees per Hz
+    phi0 = pm - slope * fm
+    res = ph .- (phi0 .+ slope .* f)
+    se = sqrt(1 / sum(w .* (f .- fm) .^ 2))                                       # degrees per Hz, from the quoted per-point scatter
+    return (tau_ns = slope / 360 * 1e9, tau_err_ns = se / 360 * 1e9, phi0 = phi0, rms = sqrt(mean(res .^ 2)), n = length(f))
+end
+
+function read_tone_rows(path::String)
+    rows = NamedTuple[]
+    for line in eachline(path)
+        (startswith(line, "utc,") || isempty(strip(line))) && continue
+        c = split(line, ',')
+        length(c) >= 16 || continue
+        push!(rows, (tag = String(c[2]), f_bb = parse(Float64, c[4]), phase = parse(Float64, c[6]), std = parse(Float64, c[7]),
+                     cable = parse(Float64, c[14]), vf = parse(Float64, c[15])))
+    end
+    return rows
+end
+
+function report_delay(rows, label)
+    isempty(rows) && (println("  no rows for ", label); return nothing)
+    length(rows) >= 3 || (println("  only $(length(rows)) point(s) for $label; need at least 3 frequencies"); return nothing)
+    fd = fit_delay([r.f_bb for r in rows], [r.phase for r in rows], [r.std for r in rows])
+    @printf("  %-12s %2d points, baseband %.0f to %.0f kHz: delay %.2f +- %.2f ns, phase at LO %.1f deg, residual rms %.2f deg, extra cable %.2f m\n",
+            label, fd.n, minimum(r.f_bb for r in rows) / 1e3, maximum(r.f_bb for r in rows) / 1e3, fd.tau_ns, fd.tau_err_ns, fd.phi0, fd.rms, mean(r.cable for r in rows))
+    return (fd = fd, cable = mean(r.cable for r in rows), vf = mean(r.vf for r in rows))
+end
+
+function mode_delayfit(cfg::Config)
+    file = isempty(cfg.tn_file) ? joinpath(cfg.out_dir, "tone_results.csv") : cfg.tn_file
+    rows = read_tone_rows(file)
+    println("Delay from the phase-versus-frequency slope, ", file)
+    A = report_delay(filter(r -> isempty(cfg.tag) || r.tag == cfg.tag, rows), isempty(cfg.tag) ? "(all rows)" : cfg.tag)
+    if !isempty(cfg.tn_tag2)
+        B = report_delay(filter(r -> r.tag == cfg.tn_tag2, rows), cfg.tn_tag2)
+        if A !== nothing && B !== nothing
+            dt = B.fd.tau_ns - A.fd.tau_ns
+            exp_ns = (B.cable - A.cable) / (B.vf * C_LIGHT) * 1e9
+            err = sqrt(A.fd.tau_err_ns^2 + B.fd.tau_err_ns^2)
+            @printf("\n  measured delay difference %.2f +- %.2f ns; expected from the cable change %.2f ns (extra %.2f m at velocity factor %.2f)\n",
+                    dt, err, exp_ns, B.cable - A.cable, B.vf)
+            @printf("  difference %.2f ns (%.1f%% of the expected value). %s\n", dt - exp_ns, 100 * abs(dt - exp_ns) / max(abs(exp_ns), 1e-9),
+                    abs(dt - exp_ns) < max(3err, 0.05 * abs(exp_ns)) ? "AGREES within the fit error / 5% velocity-factor uncertainty" : "DISAGREES: check the cable length, the velocity factor and the generator settings")
+        end
+    end
+    return nothing
+end
+
+function mode_tone(cfg::Config)
+    r, rb = open_verified(cfg)
+    file = isempty(cfg.tn_file) ? joinpath(cfg.out_dir, "tone_results.csv") : cfg.tn_file
+    isdir(dirname(file)) || mkpath(dirname(file))
+    isfile(file) || open(io -> println(io, TONE_HEADER), file, "w")
+    offs = isempty(cfg.tn_sweep) ? Union{Nothing,Float64}[nothing] : Union{Nothing,Float64}[parse_sweep(cfg.tn_sweep)...]
+    println("\nTone measurement: $(cfg.duration_s) s per point, results appended to $file (tag '$(cfg.tag)', extra cable $(cfg.tn_cable_m) m)")
+    cnt = 0
+    try
+        for off in offs
+            if off !== nothing
+                @printf("\nSet the generator to %.6f MHz (LO %+.0f kHz), then press Enter   [s = skip this point, q = stop]: ", (Float64(rb.lo) + off * 1e3) / 1e6, off)
+                ans = strip(readline())
+                ans == "q" && break
+                ans == "s" && continue
+            end
+            m = measure_tone(r, cfg, rb, cfg.duration_s)
+            @printf("  tone at %+.3f kHz (true %.6f MHz): %.1f dB (RX1), %.1f dB (RX2) above the noise\n", m.f_bb / 1e3, m.f_true / 1e6, m.snr1_db, m.snr2_db)
+            @printf("  coherence at the tone |rho| = %.4f (expected from the SNRs %.4f)\n", m.rho, m.rho_exp)
+            @printf("  strongest other line (DC excluded): %+.1f kHz, %.1f dB below the tone%s\n", m.spur_khz, -m.spur_db,
+                    m.spur_db > -30 ? "   <-- SPUR: a harmonic or alias, or a second signal. Filter the generator output or move the tone." : "")
+            @printf("  phase RX1-RX2 = %.2f deg, standard deviation %.2f deg over %d blocks, drift first to last %.2f deg\n", m.phase, m.phase_std, m.nblk, m.drift)
+            min(m.snr1_db, m.snr2_db) < 10 && println("  WARNING: no clear tone on both channels (below 10 dB). Check the generator output, the splitter and the attenuators.")
+            m.clip > 1e-3 && println("  WARNING: clipping. Add attenuation.")
+            abs(m.rho - m.rho_exp) > 0.1 && println("  NOTE: measured |rho| differs from the SNR-based expectation by more than 0.1: the channels may not see the same signal, or the tone is not alone in the band.")
+            open(file, "a") do io
+                @printf(io, "%s,%s,%.0f,%.3f,%.3f,%.3f,%.3f,%.5f,%.5f,%.2f,%.2f,%.1f,%.1f,%.3f,%.3f,%d\n", string(now(UTC)), cfg.tag, m.f_lo, m.f_bb, m.f_true, m.phase, m.phase_std,
+                        m.rho, m.rho_exp, m.snr1_db, m.snr2_db, rb.gain1, rb.gain2, cfg.tn_cable_m, cfg.tn_vf, m.nblk)
+            end
+            cnt += 1
+        end
+    finally
+        close_radio!(r)
+    end
+    if cnt >= 3
+        println("\nDelay from this run's points:")
+        rows = filter(rw -> rw.tag == cfg.tag, read_tone_rows(file))
+        report_delay(rows[max(1, end - cnt + 1):end], isempty(cfg.tag) ? "(this run)" : cfg.tag)
+    end
+    println("\nNext: change the cable (set tn_cable_m= and a new tag=), repeat the sweep, then: julia V1.jl delayfit tag=<A> tn_tag2=<B>")
+    return nothing
+end
+
+# ---------------------------------------------------------------------
 function main(args::Vector{String})
     mode, cfg = parse_cli(args)
     mode == "selftest" ? (mode_selftest(cfg) || exit(1)) :
@@ -1196,6 +1406,8 @@ function main(args::Vector{String})
     mode == "run"      ? mode_run(cfg) :
     mode == "show"     ? mode_show(cfg) :
     mode == "sim"      ? mode_sim(cfg) :
+    mode == "tone"     ? mode_tone(cfg) :
+    mode == "delayfit" ? mode_delayfit(cfg) :
     error("Unknown mode '$mode'.\n" * usage())
     return nothing
 end
