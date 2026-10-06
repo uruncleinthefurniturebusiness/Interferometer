@@ -119,7 +119,7 @@ function captureDualRX!(radio::DualRXRadio)
     AP.C_iio_channel_read!(radio.rx1_i, radio.bufPtr, radio.raw_i2)
     AP.C_iio_channel_read!(radio.rx1_q, radio.bufPtr, radio.raw_q2)
 
-    norm = Float32(2^15)  # 16-bit signed container -> normalize to roughly [-1, 1]
+    norm = Float32(2^11)  # 12-bit right-justified samples (le:S12/16>>0, range -2048..2047) -> [-1, 1]
 
     rx1 = (reinterpret(Int16, radio.raw_i1) .+ 1im .* reinterpret(Int16, radio.raw_q1)) ./ norm
     rx2 = (reinterpret(Int16, radio.raw_i2) .+ 1im .* reinterpret(Int16, radio.raw_q2)) ./ norm

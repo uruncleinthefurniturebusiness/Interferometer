@@ -106,7 +106,7 @@ AP.C_iio_channel_read!(rx0_q, rxBufPtr, raw_q1)
 AP.C_iio_channel_read!(rx1_i, rxBufPtr, raw_i2)
 AP.C_iio_channel_read!(rx1_q, rxBufPtr, raw_q2)
 
-norm = Float32(2^15)
+norm = Float32(2^11)  # 12-bit right-justified samples (-2048..2047)
 rx1 = ComplexF32.((reinterpret(Int16, raw_i1) .+ 1im .* reinterpret(Int16, raw_q1)) ./ norm)
 rx2 = ComplexF32.((reinterpret(Int16, raw_i2) .+ 1im .* reinterpret(Int16, raw_q2)) ./ norm)
 
