@@ -102,42 +102,42 @@ end
 
 # Test the shifting function ####################################
 
-println()
-println()
+#println()
+#println()
 
-println( "Testing function shift_sampled_signal()" )
+#println( "Testing function shift_sampled_signal()" )
 
 # Create a sine wave to test the shifting
-fs = 10       #  Sample rate is 10 Hz
-dt = 1/fs     #  Sample spacing
-t = 0:dt:10   # 0..10 seconds
-N = length(t)  
+#fs = 10       #  Sample rate is 10 Hz
+#dt = 1/fs     #  Sample spacing
+#t = 0:dt:10   # 0..10 seconds
+#N = length(t)  
 
-f0 = 1.0   # Test frequency
+#f0 = 1.0   # Test frequency
 
-x = cos.(2*pi*f0*t)  # purely real signal for testing
+#x = cos.(2*pi*f0*t)  # purely real signal for testing
 
 #x = cos.(2*pi*f0*t) .+ im*sin.(2*pi*f0*t)   # complex signal for testing
 
 
-shift_value = 3.25 # in seconds
-sample_spacing = 1/fs
-shift_type = "noncircular"  # Alternatively use "circular"
+#shift_value = 3.25 # in seconds
+#sample_spacing = 1/fs
+#shift_type = "noncircular"  # Alternatively use "circular"
 
-y = shift_sampled_signal(x,shift_value,sample_spacing,shift_type)
+#y = shift_sampled_signal(x,shift_value,sample_spacing,shift_type)
 
-plot_time_domain_real = plot(t,real(x),label="real(x)");
-plot!(t,real(y),label="real(y)");
-title!("Real parts of signals x and y")
+#plot_time_domain_real = plot(t,real(x),label="real(x)");
+#plot!(t,real(y),label="real(y)");
+#title!("Real parts of signals x and y")
 
-plot_time_domain_imag = plot(t,imag(x),label="imag(x)");
-plot!(t,imag(y),label="imag(y)");
-title!("Imaginary parts of signals x and y")
-display(plot( plot_time_domain_real, plot_time_domain_imag,layout = (2, 1)) )
+#plot_time_domain_imag = plot(t,imag(x),label="imag(x)");
+#plot!(t,imag(y),label="imag(y)");
+#title!("Imaginary parts of signals x and y")
+#display(plot( plot_time_domain_real, plot_time_domain_imag,layout = (2, 1)) )
 
-@show maximum(real(y))
-@show maximum(imag(y))
+#@show maximum(real(y))
+#@show maximum(imag(y))
 
-@show typeof(x)
-@show typeof(y)
+#@show typeof(x)
+#@show typeof(y)
 
