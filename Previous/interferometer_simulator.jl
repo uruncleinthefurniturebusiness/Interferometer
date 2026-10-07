@@ -65,7 +65,7 @@ function simulate_point_source(; f_center::Float64, sample_rate::Float64, n_samp
     # noise-like at RF -- there's no coherent carrier to exploit the
     # way the TX-tone bench test does -- so this is complex white
     # Gaussian noise, not a tone.
-    s = ComplexF32.(randn(ComplexF64, n_samples))
+    s = ComplexF32.(randn(ComplexF64, n_samples)) 
 
     # Effect 2: fractional-sample envelope delay via frequency-domain
     # phase ramp (Fourier shift theorem, exact for a bandlimited signal).

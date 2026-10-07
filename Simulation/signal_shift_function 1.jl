@@ -9,7 +9,7 @@
 
 using FFTW
 using Plots
-plotly()
+#plotly()
 default(size=(800,1000)); #Plot canvas size
 #default(label=""); # Turn off legends
 default(ticks=:native);  #Ticks on x-axis are labelled nicely when zooming in.

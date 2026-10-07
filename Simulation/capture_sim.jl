@@ -1,0 +1,188 @@
+# Simulation of the data capture and processing of the sun for the interferometry project
+# Ideally, this would be run on the Pluto SDR, but for now it is a simulation of the data capture and processing.
+# Joshua Smith
+# 2026 - EEE4022S
+
+using Plots, Random, FFTW
+include("signal_shift_function 1.jl")  # Include the signal shifting function
+Plots.gr()  # Use GR backend for plotting
+
+# Var declarations
+
+# Signal Stuff
+sample_rate = 2.5e6 # samples/s, set as it would be on the Pluto
+f_LO = 1.42e9         # Hz, centre frequency the Pluto is tuned to (the LO); the Sun is broadband noise around it
+c = 299792458.0   # m/s, the speed of light
+N_samples = 1000    # Number of samples per capture
+
+# Antenna Stuff
+baseline = 20.0     # m, the distance between the two antennas
+
+# Sun
+au = 149597870700 # m, astronomical unit (distance from Earth to Sun)
+
+# The Sun as an extended source, not a point.
+# Why: at each snapshot along its path, the radio emission comes from the whole disk, and every
+# part of the disk radiates independently (incoherent noise). Each part sits at a slightly
+# different angle, so it reaches the two antennas with a slightly different delay. The disk
+# (~0.6 deg at 1.4 GHz) is about as wide as one fringe (~0.6 deg on 20 m), so the fringes
+# from different parts of the disk partly cancel when they add up. A point-source Sun would
+# give full-contrast fringes (|V| constant); the real Sun gives much weaker ones. Modelling the
+# disk as many independent emitters reproduces this from first principles, and the result can be
+# checked against the van Cittert-Zernike prediction for a uniform disk, 2*J1(x)/x.
+sun_diam = deg2rad(0.6)   # rad, radio diameter at 1.4 GHz (assumption: larger than the 0.53 deg optical disk; find a source)
+R_sun = sun_diam / 2
+n_grid = 21               # grid points across the diameter; spacing ~0.03 deg, well below one fringe
+grid = range(-R_sun, R_sun, length=n_grid)
+# Fixed grid of emitters filling the disk (a fixed grid avoids the scatter random positions would add).
+# Only the offset along the baseline direction changes the delay, so keep just that coordinate.
+sub_offsets = [x for x in grid, y in grid if x^2 + y^2 <= R_sun^2]
+N_sub = length(sub_offsets)
+
+# Earth (not used in this proof of concept, kept for the full simulation)
+T_e = 24*60*60      # One solar day in seconds (gives the Sun's hour-angle rate of 15 deg/h)
+f_e = 1/T_e         # Frequency of earth rotation in Hz
+ω_e = 2π*f_e        # Angular frequency of earth rotation in rad/s
+R_e = 6371000       # m, radius of the earth
+
+
+# Angular sweep range (-3° to +3°). One fringe is asin(c/(f_LO*B)) near broadside (~0.605°),
+# so use samples_per_fringe points per fringe (at least 10 are needed to see it working).
+theta_fringe = asin(c / (f_LO * baseline))
+samples_per_fringe = 20
+dtheta = theta_fringe / samples_per_fringe
+theta_max = deg2rad(3.0)
+N_pos = 2 * round(Int, theta_max / dtheta) + 1
+theta_range = range(-theta_max, theta_max, length=N_pos)
+
+println("One fringe = $(round(rad2deg(theta_fringe), digits=3)) deg; $(N_pos) positions, ",
+        "$(round(rad2deg(step(theta_range)), digits=4)) deg per step ",
+        "(~$(round(rad2deg(step(theta_range)) / (15/3600), digits=1)) s of Sun motion per step)")
+
+# Stage 1: simulate IQ1 and IQ2, one column per sky position
+IQ1 = Matrix{ComplexF64}(undef, N_samples, N_pos)
+IQ2 = similar(IQ1)
+
+SNR_linear = 0.5 # Total solar signal power (whole disk) relative to SDR noise power
+
+for (i, theta) in enumerate(theta_range)
+    sun1 = zeros(ComplexF64, N_samples)
+    sun2 = zeros(ComplexF64, N_samples)
+
+    # Each grid point is an independent emitter carrying an equal share of the Sun's power
+    for d_off in sub_offsets
+        # Geometric delay between antennas for this part of the disk
+        delta_tau = (baseline * sin(theta + d_off)) / c
+
+        part_signal = sqrt(SNR_linear / N_sub) .* randn(ComplexF64, N_samples)
+        sun1 .+= part_signal
+
+        # "circular": the delay is a tiny fraction of a sample, so no samples should be zeroed
+        shifted_part = shift_sampled_signal(part_signal, delta_tau, 1/sample_rate, "circular")
+        sun2 .+= shifted_part .* exp(-2π * im * f_LO * delta_tau)
+    end
+
+    n1 = randn(ComplexF64, N_samples)
+    n2 = randn(ComplexF64, N_samples)
+
+    IQ1[:, i] = sun1 .+ n1
+    IQ2[:, i] = sun2 .+ n2
+end
+
+# Stage 2: process each position. FFT both, multiply by the conjugate, IFFT, take the peak
+C_max = Vector{ComplexF64}(undef, N_pos)   # complex visibility, normalised so |C| <= 1
+peak_lag = Vector{Int}(undef, N_pos)       # index of the correlation peak (1 = zero lag)
+
+for i in 1:N_pos
+    iq1 = IQ1[:, i]
+    iq2 = IQ2[:, i]
+
+    # 1. Frequency domain conversion
+    F1 = fft(iq1)
+    F2 = fft(iq2)
+
+    # 2. Conjugate multiplication & Inverse FFT (Cross-correlation)
+    corr_time = ifft(F1 .* conj.(F2))
+
+    # 3. Peak visibility extraction
+    val, idx = findmax(abs.(corr_time))
+    peak_lag[i] = idx
+    C_max[i] = corr_time[idx] / sqrt(sum(abs2, iq1) * sum(abs2, iq2)) # Parseval's theorem for normalisation
+end
+
+# Self-check against the analytic answer: x1*conj(x2) has phase +2*pi*f_LO*tau
+expected = exp.(2im * π * f_LO * baseline .* sin.(theta_range) ./ c)
+phase_err_deg = rad2deg.(angle.(C_max .* conj.(expected)))
+
+# Expected magnitude for the disk (van Cittert-Zernike): the receiver noise limits the correlation
+# to SNR/(1+SNR), and the disk's partial cancellation multiplies that by 2*J1(x)/x.
+# J1 from its integral definition, J1(x) = (1/pi) * integral over 0..pi of cos(t - x*sin(t)) dt
+besselj1_int(x) = sum(cos(t - x * sin(t)) for t in range(0, π, length=2001)) / 2000
+x_disk = π * baseline * sun_diam / (c / f_LO)
+V_disk = 2 * besselj1_int(x_disk) / x_disk
+V_expected = SNR_linear / (1 + SNR_linear) * V_disk
+
+println("Sun modelled as $(N_sub) emitters over a $(round(rad2deg(sun_diam), digits=2)) deg disk")
+println("Correlation peak at zero lag in $(count(==(1), peak_lag)) of $(N_pos) positions")
+println("Visibility magnitude: min $(round(minimum(abs.(C_max)), digits=4)), max $(round(maximum(abs.(C_max)), digits=4)), ",
+        "mean $(round(sum(abs.(C_max)) / N_pos, digits=4)); expected $(round(V_expected, digits=4)) ",
+        "(disk factor $(round(V_disk, digits=3)), point source would give $(round(SNR_linear / (1 + SNR_linear), digits=4)))")
+println("Phase error vs analytic: max $(round(maximum(abs.(phase_err_deg)), digits=3)) deg, ",
+        "mean $(round(sum(phase_err_deg) / N_pos, digits=3)) deg")
+
+# Plot 1: Interference Fringes (Phase Angle), simulated against the analytic curve
+p1 = plot(rad2deg.(theta_range), angle.(expected),
+    label="analytic",
+    ls=:dash,
+    lw=2,
+    xlabel="Angle (degrees)",
+    ylabel="Phase (radians)",
+    title="Interferometer Fringe Pattern")
+scatter!(p1, rad2deg.(theta_range), angle.(C_max), label="simulated", ms=2)
+
+# Plot 2: Spectrum of the fringe pattern over angle.
+# The fringe oscillates at B/lambda cycles per radian, so the peak sits at the baseline length.
+d_theta = step(theta_range)                                        # Angular step size (radians)
+spatial_freqs = fftshift(fftfreq(N_pos, 1/d_theta))                # cycles per radian
+baseline_axis = spatial_freqs .* (c / f_LO)                        # metres
+spec = abs.(fftshift(fft(C_max)))
+B_est = baseline_axis[argmax(spec)]
+bin_width = (c / f_LO) / (N_pos * d_theta)                         # metres per FFT bin
+println("Spectrum peak at B = $(round(B_est, digits=2)) m (true $(baseline) m, bin width $(round(bin_width, digits=2)) m)")
+
+p2 = plot(baseline_axis, spec,
+    xlims=(-60, 60),
+    xlabel="Baseline length (m)",
+    ylabel="Magnitude",
+    title="Fringe-Frequency Spectrum (peak at the baseline length)",
+    legend=false)
+vline!(p2, [baseline], ls=:dash)
+
+p3 = plot(theta_range, abs.(C_max),
+    xlabel="Angle (radians)",
+    ylabel="Magnitude",
+
+    title="Visibility Magnitude vs Angle",
+    legend=false
+
+)
+hline!(p3, [V_expected], ls=:dash)   # van Cittert-Zernike prediction for the disk
+
+# Plot 4: real part of the visibility, the classic cosine fringes
+p4 = plot(rad2deg.(theta_range), real.(C_max),
+    xlabel="Angle (degrees)",
+    ylabel="Re(visibility)",
+    title="Fringes (real part of the visibility)",
+    legend=false)
+
+
+# Combine plots and explicitly force display
+plt = plot(p1, p2, p3, p4, layout=(2, 2), size=(1920, 1080), margin=8Plots.mm)
+display(plt)
+
+# Save image locally as a fallback
+#savefig("interferometer_sim.png")
+
+# Prevents terminal scripts from closing the plot window immediately
+println("Press [ENTER] to exit...")
+readline()
