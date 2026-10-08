@@ -6,6 +6,7 @@
 using Plots, Random, FFTW
 include("signal_shift_function 1.jl")  # Include the signal shifting function
 Plots.gr()  # Use GR backend for plotting
+Random.seed!(1234)
 
 # Var declarations
 
@@ -17,6 +18,7 @@ N_samples = 1000    # Number of samples per capture
 
 # Antenna Stuff
 baseline = 20.0     # m, the distance between the two antennas
+dish_diameter = 3  # m, the diameter of the dish antennas
 
 # Sun
 au = 149597870700 # m, astronomical unit (distance from Earth to Sun)
@@ -32,7 +34,7 @@ au = 149597870700 # m, astronomical unit (distance from Earth to Sun)
 # checked against the van Cittert-Zernike prediction for a uniform disk, 2*J1(x)/x.
 sun_diam = deg2rad(0.6)   # rad, radio diameter at 1.4 GHz (assumption: larger than the 0.53 deg optical disk; find a source)
 R_sun = sun_diam / 2
-n_grid = 21               # grid points across the diameter; spacing ~0.03 deg, well below one fringe
+n_grid = 41               # grid points across the diameter; spacing ~0.03 deg, well below one fringe
 grid = range(-R_sun, R_sun, length=n_grid)
 # Fixed grid of emitters filling the disk (a fixed grid avoids the scatter random positions would add).
 # Only the offset along the baseline direction changes the delay, so keep just that coordinate.
@@ -51,7 +53,7 @@ R_e = 6371000       # m, radius of the earth
 theta_fringe = asin(c / (f_LO * baseline))
 samples_per_fringe = 20
 dtheta = theta_fringe / samples_per_fringe
-theta_max = deg2rad(3.0)
+theta_max = deg2rad(3.0)  # 0,0523599 rad, 3 deg in radians
 N_pos = 2 * round(Int, theta_max / dtheta) + 1
 theta_range = range(-theta_max, theta_max, length=N_pos)
 
@@ -89,9 +91,9 @@ for (i, theta) in enumerate(theta_range)
     IQ2[:, i] = sun2 .+ n2
 end
 
-# Stage 2: process each position. FFT both, multiply by the conjugate, IFFT, take the peak
+# Stage 2: process each position. FFT both, multiply by the conjugate, IFFT, zero lag (the delay (≤ 67 ns) is under one sample (400 ns).)
 C_max = Vector{ComplexF64}(undef, N_pos)   # complex visibility, normalised so |C| <= 1
-peak_lag = Vector{Int}(undef, N_pos)       # index of the correlation peak (1 = zero lag)
+#peak_lag = Vector{Int}(undef, N_pos)       # index of the correlation peak (1 = zero lag)
 
 for i in 1:N_pos
     iq1 = IQ1[:, i]
@@ -105,14 +107,15 @@ for i in 1:N_pos
     corr_time = ifft(F1 .* conj.(F2))
 
     # 3. Peak visibility extraction
-    val, idx = findmax(abs.(corr_time))
-    peak_lag[i] = idx
-    C_max[i] = corr_time[idx] / sqrt(sum(abs2, iq1) * sum(abs2, iq2)) # Parseval's theorem for normalisation
-end
+    idx = 1 #val, idx = findmax(abs.(corr_time))
+    #peak_lag[i] = idx
+    C_max[i] = corr_time[idx] / sqrt(sum(abs2, iq1) * sum(abs2, iq2)) # zero lag = Σ x1·conj(x2) (Parseval); divide by channel powers so |C| ≤ 1.
+end 
 
 # Self-check against the analytic answer: x1*conj(x2) has phase +2*pi*f_LO*tau
 expected = exp.(2im * π * f_LO * baseline .* sin.(theta_range) ./ c)
-phase_err_deg = rad2deg.(angle.(C_max .* conj.(expected)))
+C_rot = C_max .* conj.(expected)          # each snapshot with the predicted fringe phase removed (used for fix 6 below)
+phase_err_deg = rad2deg.(angle.(C_rot))
 
 # Expected magnitude for the disk (van Cittert-Zernike): the receiver noise limits the correlation
 # to SNR/(1+SNR), and the disk's partial cancellation multiplies that by 2*J1(x)/x.
@@ -123,12 +126,29 @@ V_disk = 2 * besselj1_int(x_disk) / x_disk
 V_expected = SNR_linear / (1 + SNR_linear) * V_disk
 
 println("Sun modelled as $(N_sub) emitters over a $(round(rad2deg(sun_diam), digits=2)) deg disk")
-println("Correlation peak at zero lag in $(count(==(1), peak_lag)) of $(N_pos) positions")
+#println("Correlation peak at zero lag in $(count(==(1), 1)) of $(N_pos) positions")
 println("Visibility magnitude: min $(round(minimum(abs.(C_max)), digits=4)), max $(round(maximum(abs.(C_max)), digits=4)), ",
         "mean $(round(sum(abs.(C_max)) / N_pos, digits=4)); expected $(round(V_expected, digits=4)) ",
         "(disk factor $(round(V_disk, digits=3)), point source would give $(round(SNR_linear / (1 + SNR_linear), digits=4)))")
 println("Phase error vs analytic: max $(round(maximum(abs.(phase_err_deg)), digits=3)) deg, ",
         "mean $(round(sum(phase_err_deg) / N_pos, digits=3)) deg")
+
+# FIX 6: COHERENT (UNBIASED) CHECK OF |V| (added 2026-10-07)
+# Problem: the "mean" magnitude printed above averages abs.(C_max). Noise adds in a random direction
+# but a magnitude can never be negative, so noise never cancels and the average reads high (Rician
+# bias): about |V| + sigma^2/(2|V|) = 0.067 instead of 0.063 here, ~6% high at this SNR.
+# Fix (fringe stopping): C_rot (above) removes the predicted fringe phase from every snapshot, so the
+# signal points along the positive real axis in all of them while the noise stays random. Averaging
+# the complex values then lets the noise cancel (shrinks as 1/sqrt(N_pos)) instead of adding.
+# - Real part   = unbiased estimate of V (negative if the disk were past the first null of 2*J1(x)/x)
+# - Imag part   = pure noise, should be ~0 (sanity check)
+# This also tests the phase: if the predicted phase were wrong (sign, baseline, delay), the snapshots
+# would not line up and the average would collapse towards zero. The old magnitude average hid that.
+V_coh = sum(C_rot) / N_pos                    # coherent average over all positions
+σ_coh = 1 / sqrt(2 * N_samples * N_pos)       # expected noise on each component of V_coh (~0.0016 here)
+println("Coherent V (fringe-stopped): real $(round(real(V_coh), digits=4)) ± $(round(σ_coh, digits=4)) ",
+        "(expected $(round(V_expected, digits=4))), imaginary $(round(imag(V_coh), digits=4)) (should be ~0)")
+        
 
 # Plot 1: Interference Fringes (Phase Angle), simulated against the analytic curve
 p1 = plot(rad2deg.(theta_range), angle.(expected),
@@ -137,7 +157,9 @@ p1 = plot(rad2deg.(theta_range), angle.(expected),
     lw=2,
     xlabel="Angle (degrees)",
     ylabel="Phase (radians)",
-    title="Interferometer Fringe Pattern")
+    title="Interferometer Fringe Pattern"
+    
+)
 scatter!(p1, rad2deg.(theta_range), angle.(C_max), label="simulated", ms=2)
 
 # Plot 2: Spectrum of the fringe pattern over angle.
@@ -155,16 +177,15 @@ p2 = plot(baseline_axis, spec,
     xlabel="Baseline length (m)",
     ylabel="Magnitude",
     title="Fringe-Frequency Spectrum (peak at the baseline length)",
-    legend=false)
+    legend=false
+)
 vline!(p2, [baseline], ls=:dash)
 
-p3 = plot(theta_range, abs.(C_max),
-    xlabel="Angle (radians)",
+p3 = plot(rad2deg.(theta_range), abs.(C_max),
+    xlabel="Angle (degrees)",
     ylabel="Magnitude",
-
     title="Visibility Magnitude vs Angle",
     legend=false
-
 )
 hline!(p3, [V_expected], ls=:dash)   # van Cittert-Zernike prediction for the disk
 
@@ -173,7 +194,8 @@ p4 = plot(rad2deg.(theta_range), real.(C_max),
     xlabel="Angle (degrees)",
     ylabel="Re(visibility)",
     title="Fringes (real part of the visibility)",
-    legend=false)
+    legend=false
+)
 
 
 # Combine plots and explicitly force display
