@@ -3,25 +3,32 @@
 # Joshua Smith
 # 2026 - EEE4022S
 
-using Plots, Random, FFTW
+using Plots, Random, FFTW, Dates
 include("signal_shift_function 1.jl")  # Include the signal shifting function
 Plots.gr()  # Use GR backend for plotting
-Random.seed!(1234)
+Random.seed!(1234) # Seed for reproducibility
 
 # Var declarations
 
 # Signal Stuff
-sample_rate = 2.5e6 # samples/s, set as it would be on the Pluto
+sample_rate = 2.5e6 # samples/s, set as it would be on the Pluto with the two Rx channels
 f_LO = 1.42e9         # Hz, centre frequency the Pluto is tuned to (the LO); the Sun is broadband noise around it
 c = 299792458.0   # m/s, the speed of light
 N_samples = 1000    # Number of samples per capture
 
 # Antenna Stuff
-baseline = 20.0     # m, the distance between the two antennas
+baseline = 20.0     # m, the distance between the two antennas 
 dish_diameter = 3  # m, the diameter of the dish antennas
 
 # Sun
 au = 149597870700 # m, astronomical unit (distance from Earth to Sun)
+
+# Far-field check: the delay formula below (B*sin(theta)/c) assumes a flat wavefront across the
+# baseline, valid when the source is much farther than 2B^2/lambda (~4 km on 20 m). The Sun's
+# distance then drops out and only its direction matters.
+d_far = 2 * baseline^2 / (c / f_LO)
+println("Far field: Sun at 1 AU is $(round(au / d_far, sigdigits=2)) times the plane-wave distance ",
+        "2B²/λ = $(round(d_far / 1e3, digits=2)) km, so the plane-wave delay is valid")
 
 # The Sun as an extended source, not a point.
 # Why: at each snapshot along its path, the radio emission comes from the whole disk, and every
@@ -67,6 +74,12 @@ IQ2 = similar(IQ1)
 
 SNR_linear = 0.5 # Total solar signal power (whole disk) relative to SDR noise power
 
+# Keep the Sun-only signals of one snapshot for plotting (plots 5 and 6). A quarter fringe off
+# broadside, where the fringe phase between the antennas is 90 degrees.
+i_show = argmin(abs.(theta_range .- theta_fringe / 4))
+sun1_show = zeros(ComplexF64, N_samples)
+sun2_show = zeros(ComplexF64, N_samples)
+
 for (i, theta) in enumerate(theta_range)
     sun1 = zeros(ComplexF64, N_samples)
     sun2 = zeros(ComplexF64, N_samples)
@@ -84,11 +97,17 @@ for (i, theta) in enumerate(theta_range)
         sun2 .+= shifted_part .* exp(-2π * im * f_LO * delta_tau)
     end
 
-    n1 = randn(ComplexF64, N_samples)
+    n1 = rand
+    n(ComplexF64, N_samples)
     n2 = randn(ComplexF64, N_samples)
 
     IQ1[:, i] = sun1 .+ n1
     IQ2[:, i] = sun2 .+ n2
+
+    if i == i_show
+        sun1_show .= sun1
+        sun2_show .= sun2
+    end
 end
 
 # Stage 2: process each position. FFT both, multiply by the conjugate, IFFT, zero lag (the delay (≤ 67 ns) is under one sample (400 ns).)
@@ -155,8 +174,8 @@ p1 = plot(rad2deg.(theta_range), angle.(expected),
     label="analytic",
     ls=:dash,
     lw=2,
-    xlabel="Angle (degrees)",
-    ylabel="Phase (radians)",
+    xlabel="Angle (°)",
+    ylabel="Phase (rad)",
     title="Interferometer Fringe Pattern"
     
 )
@@ -182,7 +201,7 @@ p2 = plot(baseline_axis, spec,
 vline!(p2, [baseline], ls=:dash)
 
 p3 = plot(rad2deg.(theta_range), abs.(C_max),
-    xlabel="Angle (degrees)",
+    xlabel="Angle (°)",
     ylabel="Magnitude",
     title="Visibility Magnitude vs Angle",
     legend=false
@@ -191,19 +210,57 @@ hline!(p3, [V_expected], ls=:dash)   # van Cittert-Zernike prediction for the di
 
 # Plot 4: real part of the visibility, the classic cosine fringes
 p4 = plot(rad2deg.(theta_range), real.(C_max),
-    xlabel="Angle (degrees)",
+    xlabel="Angle (°)",
     ylabel="Re(visibility)",
     title="Fringes (real part of the visibility)",
     legend=false
 )
 
+# Plots 5 and 6: the signals themselves at one snapshot (first n_show samples, real part = I)
+n_show = 60
+t_us = (0:n_show-1) ./ sample_rate .* 1e6     # time in microseconds (0.4 us per sample)
+theta_show = round(rad2deg(theta_range[i_show]), digits=3)
+
+# The Sun-only signals at the two antennas are not copies of each other: the disk is resolved, so
+# they correlate only by the disk factor (not 1), at the fringe phase for this angle.
+ρ_sun = sum(sun1_show .* conj.(sun2_show)) / sqrt(sum(abs2, sun1_show) * sum(abs2, sun2_show))
+println("Snapshot at $(theta_show) deg: Sun-only correlation |ρ| = $(round(abs(ρ_sun), digits=3)) ",
+        "(disk factor $(round(V_disk, digits=3)), noise ~$(round(1 / sqrt(2 * N_samples), digits=3))), ",
+        "phase $(round(rad2deg(angle(ρ_sun)), digits=1)) deg (predicted $(round(rad2deg(angle(expected[i_show])), digits=1)))")
+
+# Plot 5: the Sun's signal as it reaches each antenna, before the receiver adds its own noise
+p5 = plot(t_us, real.(sun1_show[1:n_show]),
+    label="antenna 1",
+    marker=:circle,
+    ms=2,
+    xlabel="Time (µs)",
+    ylabel="I (Re)",
+    title="Sun signal at each antenna, θ = $(theta_show)°"
+)
+plot!(p5, t_us, real.(sun2_show[1:n_show]), label="antenna 2", marker=:circle, ms=2)
+
+# Plot 6: what the Pluto captures, the same Sun signal plus independent receiver noise per channel
+p6 = plot(t_us, real.(IQ1[1:n_show, i_show]),
+    label="RX1",
+    marker=:circle,
+    ms=2,
+    xlabel="Time (µs)",
+    ylabel="I (Re)",
+    title="Captured signal (Sun + receiver noise), θ = $(theta_show)°"
+)
+plot!(p6, t_us, real.(IQ2[1:n_show, i_show]), label="RX2", marker=:circle, ms=2)
+
 
 # Combine plots and explicitly force display
-plt = plot(p1, p2, p3, p4, layout=(2, 2), size=(1920, 1080), margin=8Plots.mm)
+plt = plot(p1, p2, p3, p4, p5, p6, layout=(3, 2), size=(1920, 1080), margin=8Plots.mm)
 display(plt)
 
 # Save image locally as a fallback
-#savefig("interferometer_sim.png")
+stamp = Dates.format(now(), "yyyy-mm-dd_HHMMSS")      # e.g. 2026-10-08_181530
+figdir = joinpath(@__DIR__, "figures")   # next to the script, wherever you run it from
+mkpath(figdir)                           # creates the folder if it doesn't exist
+name = "sun_B$(baseline)m_N$(N_samples)_grid$(n_grid)_$(stamp).png"
+savefig(plt, joinpath(figdir, name))
 
 # Prevents terminal scripts from closing the plot window immediately
 println("Press [ENTER] to exit...")

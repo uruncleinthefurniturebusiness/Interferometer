@@ -26,8 +26,7 @@
 #
 # NOTE ON STATE: the Pluto keeps its settings between runs. Every run therefore writes ALL settings
 # and then reads them back; a mismatch is fatal unless strict=false.
-# =====================================================================
-
+# ============================
 using AdalmPluto
 using FFTW
 using Statistics
