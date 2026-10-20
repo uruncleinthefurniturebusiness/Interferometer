@@ -97,8 +97,7 @@ for (i, theta) in enumerate(theta_range)
         sun2 .+= shifted_part .* exp(-2π * im * f_LO * delta_tau)
     end
 
-    n1 = rand
-    n(ComplexF64, N_samples)
+    n1 = randn(ComplexF64, N_samples)
     n2 = randn(ComplexF64, N_samples)
 
     IQ1[:, i] = sun1 .+ n1

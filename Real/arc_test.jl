@@ -10,18 +10,18 @@
 #   julia arc_test.jl capture  f_lo=2.45e9 gain1=20 gain2=20 B_m=0.25 R_m=3 angles=-60:3:60 tag=A      (hardware)
 #   julia arc_test.jl fit      tag=A                                                 fit B, theta0, phi0; pass criteria
 #   julia arc_test.jl selftest                                                       synthetic data through the fit
-# Figures: julia arc_plot.jl tag=A. Any V1.jl option (f_lo, gain1, gain2, nfft, out_dir, addr, ...) is accepted.
+# Figures: julia arc_plot.jl tag=A. Any pluto_interferometer.jl option (f_lo, gain1, gain2, nfft, out_dir, addr, ...) is accepted.
 #
 # Geometry (as in the procedure note): bar midpoint at the origin, RX1 at (+B/2, 0), RX2 at (-B/2, 0), source at
 # (R sin(theta), R cos(theta)); theta = 0 is broadside, positive theta is toward RX1. Exact distances, no far-field
 # approximation:  d1,2 = sqrt(R^2 -+ R B sin(theta) + B^2/4),  phase = 360 (d2 - d1) / lambda + phi0  (degrees).
-# Convention as in V1.jl: V = x1*conj(x2); positive phase = the signal reaches RX2 later (source on the RX1 side).
+# Convention as in pluto_interferometer.jl: V = x1*conj(x2); positive phase = the signal reaches RX2 later (source on the RX1 side).
 # =====================================================================
 
-const V1_FILE = let a = joinpath(@__DIR__, "V1.jl"), b = joinpath(@__DIR__, "Previous", "V1.jl")
+const V1_FILE = let a = joinpath(@__DIR__, "pluto_interferometer.jl"), b = joinpath(@__DIR__, "Previous", "pluto_interferometer.jl")
     isfile(a) ? a : b
 end
-include(V1_FILE)     # Config, open_verified, read_block!, FX, tone_fit, ...; V1's main() only runs when V1.jl is the script
+include(V1_FILE)     # Config, open_verified, read_block!, FX, tone_fit, ...; V1's main() only runs when pluto_interferometer.jl is the script
 
 using LinearAlgebra
 
@@ -144,7 +144,7 @@ const ARC_HEADER = "utc,tag,kind,theta_deg,R_m,B_m,f_lo_hz,f_bb_hz,f_true_hz,pha
 
 arc_file(cfg::Config, ac::ArcCfg) = isempty(ac.file) ? joinpath(cfg.out_dir, "arc_results.csv") : ac.file
 
-# Adapted from V1.jl's measure_tone (same tone phase and tone-window coherence). Adds the band-average coherence that the
+# Adapted from pluto_interferometer.jl's measure_tone (same tone phase and tone-window coherence). Adds the band-average coherence that the
 # low-signal run compares with SNR/(1+SNR), and a flag for a tone fit that locked onto the DC spike.
 function measure_point(r::Radio, cfg::Config, rb, secs::Float64)
     nsegb, bufsize = block_geometry(cfg)

@@ -1,10 +1,10 @@
 # =====================================================================
-# V1.jl -- ADALM-Pluto as a two-channel interferometer (single file)
+# pluto_interferometer.jl -- ADALM-Pluto as a two-channel interferometer (single file)
 #
 # Plan and reasoning: V1.md in the vault.
 #
 # Usage (from this folder):
-#     julia -t 3 V1.jl <mode> [key=value ...]
+#     julia -t 3 pluto_interferometer.jl <mode> [key=value ...]
 #
 # Modes
 #     selftest   no hardware: simulator -> same correlator path, drop-monitor test, file round trip
@@ -18,8 +18,8 @@
 #                compares measured visibilities with the simulation's own expectation
 #
 # Options (key=value, defaults in the Config struct below), e.g.
-#     julia -t 3 V1.jl check f_lo=1420e6 fs=2.5e6 gain1=30 gain2=30
-#     julia -t 3 V1.jl run duration_s=600 t_int=2 nfft=4096
+#     julia -t 3 pluto_interferometer.jl check f_lo=1420e6 fs=2.5e6 gain1=30 gain2=30
+#     julia -t 3 pluto_interferometer.jl run duration_s=600 t_int=2 nfft=4096
 #
 # Signal convention: visibility V = x1 * conj(x2). A positive phase means the signal reaches
 # channel 2 LATER than channel 1 (delay tau gives phase +2*pi*f_true*tau).
@@ -134,16 +134,16 @@ function parse_cli(args::Vector{String})
 end
 
 usage() = """
-V1.jl modes: selftest | check | rate | run | show | sim | tone | delayfit
-  julia -t 3 V1.jl check    [f_lo=1420e6 fs=2.5e6 gain1=40 gain2=40 addr=auto]
-  julia -t 3 V1.jl rate     [duration_s=60 tone=true]
-  julia -t 3 V1.jl run      [duration_s=600 t_int=1 nfft=4096 window=hann]
-  julia V1.jl show          [path=<file>.vis]
-  julia V1.jl selftest
-  julia -t 3 V1.jl tone     [duration_s=10 tag=A tn_cable_m=0 tn_sweep="-1000:200:1000"]   (generator tone through a splitter)
-  julia V1.jl delayfit      [tag=A tn_tag2=B]                                              (delay from the phase slope)
-  julia -t 3 V1.jl sim      [sim_model=sun sim_hours=6 sim_snr_db=-20 sim_az_deg=90 sim_dec_deg=0 ...]   (no hardware)
-See the header of V1.jl for all options."""
+pluto_interferometer.jl modes: selftest | check | rate | run | show | sim | tone | delayfit
+  julia -t 3 pluto_interferometer.jl check    [f_lo=1420e6 fs=2.5e6 gain1=40 gain2=40 addr=auto]
+  julia -t 3 pluto_interferometer.jl rate     [duration_s=60 tone=true]
+  julia -t 3 pluto_interferometer.jl run      [duration_s=600 t_int=1 nfft=4096 window=hann]
+  julia pluto_interferometer.jl show          [path=<file>.vis]
+  julia pluto_interferometer.jl selftest
+  julia -t 3 pluto_interferometer.jl tone     [duration_s=10 tag=A tn_cable_m=0 tn_sweep="-1000:200:1000"]   (generator tone through a splitter)
+  julia pluto_interferometer.jl delayfit      [tag=A tn_tag2=B]                                              (delay from the phase slope)
+  julia -t 3 pluto_interferometer.jl sim      [sim_model=sun sim_hours=6 sim_snr_db=-20 sim_az_deg=90 sim_dec_deg=0 ...]   (no hardware)
+See the header of pluto_interferometer.jl for all options."""
 
 function validate(cfg::Config)
     cfg.fs >= MIN_FS_HZ || error("fs=$(cfg.fs) Hz is below the AD9361 minimum of about $(MIN_FS_HZ) Hz; " *
@@ -772,7 +772,7 @@ function mode_run(cfg::Config)
     r, rb = open_verified(cfg)
     nsegb, bufsize = block_geometry(cfg)
     fs = Float64(rb.fs1)
-    Threads.nthreads() < 2 && println("NOTE: only 1 Julia thread; run `julia -t 3 V1.jl ...` for headroom.")
+    Threads.nthreads() < 2 && println("NOTE: only 1 Julia thread; run `julia -t 3 pluto_interferometer.jl ...` for headroom.")
     isdir(cfg.out_dir) || mkpath(cfg.out_dir)
     base = joinpath(cfg.out_dir, "V1_" * Dates.format(now(UTC), "yyyymmdd_HHMMSS") * (isempty(cfg.tag) ? "" : "_" * cfg.tag))
     vis_io = open(base * ".vis", "w")
@@ -1392,7 +1392,7 @@ function mode_tone(cfg::Config)
         rows = filter(rw -> rw.tag == cfg.tag, read_tone_rows(file))
         report_delay(rows[max(1, end - cnt + 1):end], isempty(cfg.tag) ? "(this run)" : cfg.tag)
     end
-    println("\nNext: change the cable (set tn_cable_m= and a new tag=), repeat the sweep, then: julia V1.jl delayfit tag=<A> tn_tag2=<B>")
+    println("\nNext: change the cable (set tn_cable_m= and a new tag=), repeat the sweep, then: julia pluto_interferometer.jl delayfit tag=<A> tn_tag2=<B>")
     return nothing
 end
 

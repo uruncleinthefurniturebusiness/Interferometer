@@ -1,7 +1,7 @@
 # =====================================================================
 # bt_capture.jl -- record the 2.4 GHz Bluetooth band from the ADALM-Pluto to disk, for post-processing
 #
-# Reuses the verified hardware layer of V1.jl (settings are written, then READ BACK and checked) and
+# Reuses the verified hardware layer of pluto_interferometer.jl (settings are written, then READ BACK and checked) and
 # keeps the sample rate at 2.5 Msps per channel, as in V1.
 #
 # Usage (from this folder, with 3 Julia threads: capture, writer and main each need a thread):
@@ -46,7 +46,7 @@
 #   * Gain: a phone close to the antenna is strong. If the preflight reports clipping, lower the gain.
 # =====================================================================
 
-include(joinpath(@__DIR__, "V1.jl"))      # hardware layer, Block, chan_stats, detect_fullscale (does not run V1's main)
+include(joinpath(@__DIR__, "pluto_interferometer.jl"))      # hardware layer, Block, chan_stats, detect_fullscale (does not run V1's main)
 
 const BT_CHANNELS = Dict(37 => 2402.0e6, 38 => 2426.0e6, 39 => 2480.0e6)
 const BT_BYTES_PER_SAMPLE = 4            # int16 I + int16 Q
@@ -312,7 +312,7 @@ function bt_capture(o::BTOpts)
     sizes = [filesize(p) for p in paths]
     expected_bytes = stored * BT_BYTES_PER_SAMPLE
     write_json(joinpath(o.out_dir, stem * ".json"), fields = Pair{String,Any}[
-        "software" => "bt_capture.jl (uses V1.jl hardware layer)",
+        "software" => "bt_capture.jl (uses pluto_interferometer.jl hardware layer)",
         "start_utc" => string(t_start_utc),
         "datatype" => "ci16_le (interleaved int16 I,Q, little-endian)",
         "full_scale_counts" => 2048,

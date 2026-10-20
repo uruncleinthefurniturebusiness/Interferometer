@@ -3,7 +3,7 @@
 #
 # Usage (from the Interferometer folder):
 #   julia capture_868.jl [f_tone=868e6 offset=200e3 secs=2 gain1=20 gain2=20 plot=true save_raw=true]
-# Any V1.jl option (addr, fs, nfft, rx_port, out_dir, tag, ...) is also accepted.
+# Any pluto_interferometer.jl option (addr, fs, nfft, rx_port, out_dir, tag, ...) is also accepted.
 #
 # The LO is set to f_tone - offset, so the tone lands at +offset in baseband, clear of the DC spike
 # (the Pluto's own clock error moves it by up to about +-20 kHz at 868 MHz).
@@ -13,7 +13,7 @@
 # against lag (inverse FFT of the cross spectrum). Writes raw cf32 per channel and a PNG of all panels to out_dir.
 # =====================================================================
 
-include(joinpath(@__DIR__, "V1.jl"))     # Config, open_verified, read_block!, FX, tone_fit, ...
+include(joinpath(@__DIR__, "pluto_interferometer.jl"))     # Config, open_verified, read_block!, FX, tone_fit, ...
 
 using Plots
 

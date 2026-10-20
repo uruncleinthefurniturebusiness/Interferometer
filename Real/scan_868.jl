@@ -6,7 +6,7 @@
 #
 # Usage (from the Interferometer folder):
 #   julia scan_868.jl [f_start=325e6 f_stop=1000e6 gain1=40 gain2=40 fs=5e6 tag=...]
-# Any V1.jl option is accepted. The stock Pluto tunes 325 MHz - 3.8 GHz.
+# Any pluto_interferometer.jl option is accepted. The stock Pluto tunes 325 MHz - 3.8 GHz.
 #
 # Each step keeps |baseband| < 0.4 fs (the band edges are filter roll-off) and skips the DC spike. Steps are 0.8 fs
 # apart, so the kept bands join up; the LO grid is offset by lo_offset so a round generator frequency never sits on DC.
@@ -16,7 +16,7 @@
 # Writes <out_dir>/scan_<time>[_tag]_lines.csv, _steps.csv and .png.
 # =====================================================================
 
-include(joinpath(@__DIR__, "V1.jl"))     # Config, open_verified, read_block!, detect_fullscale, to_complex, ...
+include(joinpath(@__DIR__, "pluto_interferometer.jl"))     # Config, open_verified, read_block!, detect_fullscale, to_complex, ...
 
 using Plots
 
