@@ -71,3 +71,18 @@ function read_meta(path::String)
 end
 
 meta_path(vis::String) = replace(vis, r"\.vis$" => ".meta")
+
+# Newest .vis file in dir, or "" if there is none.
+function newest_vis(dir::String)
+    isdir(dir) || return ""
+    files = filter(f -> endswith(f, ".vis"), readdir(dir; join = true))
+    return isempty(files) ? "" : last(sort(files, by = mtime))
+end
+
+# A .vis file with the settings from its .meta: the records, the meta dictionary, nfft, fs, f_lo and dc_mask.
+function load_vis(path::String)
+    meta = read_meta(meta_path(path))
+    nfft = parse(Int, meta["nfft"])
+    return (recs = read_records(path, nfft), meta = meta, nfft = nfft, fs = parse(Float64, meta["fs_hz"]),
+            f_lo = parse(Float64, meta["f_lo_hz"]), dc_mask = parse(Int, get(meta, "dc_mask", "4")))
+end

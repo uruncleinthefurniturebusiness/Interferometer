@@ -12,12 +12,12 @@ Random.seed!(1234) # Seed for reproducibility
 
 # Signal Stuff
 sample_rate = 2.5e6 # samples/s, set as it would be on the Pluto with the two Rx channels
-f_LO = 1.42e9         # Hz, centre frequency the Pluto is tuned to (the LO); the Sun is broadband noise around it
+f_LO = 868e6         # Hz, centre frequency the Pluto is tuned to (the LO); the Sun is broadband noise around it
 c = 299792458.0   # m/s, the speed of light
 N_samples = 1000    # Number of samples per capture
 
 # Antenna Stuff
-baseline = 20.0     # m, the distance between the two antennas 
+baseline = 0.69     # m, the distance between the two antennas 
 dish_diameter = 3  # m, the diameter of the dish antennas
 
 # Sun

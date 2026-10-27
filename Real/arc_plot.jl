@@ -2,7 +2,11 @@
 #
 # Usage: julia arc_plot.jl tag=A [dir=C:/PlutoCaptures]
 #        julia arc_plot.jl path=C:/PlutoCaptures/arc_results_A_fit_points.csv
-# Writes <base>_phase.pdf, _residual.pdf, _refs.pdf and _coherence.pdf (one panel each, for the report) and _summary.png.
+#        julia arc_plot.jl tag=A sim=../Simulation/figures/arc_..._points.csv     (overlays the arc_sim.jl run)
+# Writes <base>_phase.pdf, _residual.pdf, _refs.pdf, _coherence.pdf, _fringe_re.pdf and _fringe_im.pdf (one panel each,
+# for the report) and _summary.png.
+# The fringe panels are the visibility V = |rho| exp(i(phase - phi0)) with the fitted instrument phase removed, so
+# Re(V) and Im(V) swing between +-|rho| as the source moves, as in capture_sim.jl and arc_sim.jl.
 
 using Plots, Printf
 gr()
@@ -61,11 +65,35 @@ function plot_arc(args::Vector{String})
     scatter!(p4, th, rho_band, label = "band-average |rho|", ms = 3)
     plot!(p4, th, rho_band_exp, label = "SNR/(1+SNR)", ls = :dash)
 
-    for (p, name) in ((p1, "phase"), (p2, "residual"), (p3, "refs"), (p4, "coherence"))
+    # Fringes: the visibility with the instrument phase removed, against the fitted geometry at the median |rho|
+    geo = meas .- phi0
+    geo_fit = 360 .* path_diff.(tf .+ t0, B, R) ./ lam
+    rho_m = sort(rho)[cld(length(rho), 2)]
+    p5 = plot(tf, rho_m .* cosd.(geo_fit), label = "exact geometry (fit)", lw = 2, ylims = (-1.05, 1.05),
+              xlabel = "Source angle theta (deg)", ylabel = "Re(V)", title = "Fringes: real part of the visibility",
+              legend = :bottomleft)
+    scatter!(p5, th, rho .* cosd.(geo), label = "measured", ms = 3)
+    p6 = plot(tf, rho_m .* sind.(geo_fit), label = "exact geometry (fit)", lw = 2, ylims = (-1.05, 1.05),
+              xlabel = "Source angle theta (deg)", ylabel = "Im(V)", title = "Fringes: imaginary part of the visibility",
+              legend = :bottomleft)
+    scatter!(p6, th, rho .* sind.(geo), label = "measured", ms = 3)
+
+    # Simulated run (arc_sim.jl) on top of the measured one
+    if haskey(d, "sim")
+        sl = filter(l -> !isempty(strip(l)), readlines(d["sim"]))
+        sr = [parse.(Float64, split(l, ',')) for l in sl[2:end]]
+        sth = [r[1] for r in sr]; sph = [r[2] for r in sr]; srho = [r[3] for r in sr]
+        scatter!(p1, sth, phi0 .+ sph, label = "simulated", ms = 3, marker = :xcross)
+        scatter!(p4, sth, srho, label = "simulated |rho| at the tone", ms = 3, marker = :xcross)
+        scatter!(p5, sth, srho .* cosd.(sph), label = "simulated", ms = 3, marker = :xcross)
+        scatter!(p6, sth, srho .* sind.(sph), label = "simulated", ms = 3, marker = :xcross)
+    end
+
+    for (p, name) in ((p1, "phase"), (p2, "residual"), (p3, "refs"), (p4, "coherence"), (p5, "fringe_re"), (p6, "fringe_im"))
         savefig(plot(p, size = (600, 400)), base * "_" * name * ".pdf")
     end
-    savefig(plot(p1, p2, p3, p4, layout = (2, 2), size = (1400, 900), margin = 5Plots.mm), base * "_summary.png")
-    println("Wrote ", base, "_phase.pdf, _residual.pdf, _refs.pdf, _coherence.pdf and _summary.png")
+    savefig(plot(p1, p5, p2, p6, p3, p4, layout = (3, 2), size = (1400, 1300), margin = 5Plots.mm), base * "_summary.png")
+    println("Wrote ", base, "_phase.pdf, _residual.pdf, _refs.pdf, _coherence.pdf, _fringe_re.pdf, _fringe_im.pdf and _summary.png")
     return nothing
 end
 

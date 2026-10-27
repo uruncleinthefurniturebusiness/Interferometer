@@ -14,7 +14,7 @@ Convention everywhere: V = x₁·x₂\*; a positive phase means the signal reach
 ## Observing (or demonstrating)
 
 ```
-julia -t 3 pluto_interferometer.jl  # menu: the modes, the current settings and set key=value from a prompt
+julia -t 3 pluto_interferometer.jl  # menu: the modes, the current settings, set key=value, and v for the live viewer
 julia -t 3 pluto_interferometer.jl check addr=usb:1.2.5
 julia -t 3 pluto_interferometer.jl run addr=usb:1.2.5 duration_s=3600 tag=sun1 target=sun baseline_m=20 baseline_az_deg=35
 julia viewer.jl                      # second terminal: follows the newest run in C:/PlutoCaptures

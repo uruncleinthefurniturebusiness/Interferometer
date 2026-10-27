@@ -186,7 +186,8 @@ function t_readback(ctx::Ctx)
     fe = maximum(abs(x[4]) / x[2] for x in fsr)
     summ!(ctx, "readback", "Sample-rate read-back error (max, relative)", @sprintf("%.1e", fe), "$(length(fsr)) rates, 2.084-30.72 Msps",
           spec = "<= 1e-4 (SP-02)", result = pf(fe <= 1e-4))
-    rx2 = all(x[4] == 0 for x in sel("fs_rx2_hz") if isfinite(x[4]))
+    fs1_rb = Dict(x[2] => x[3] for x in sel("fs_hz"))                  # RX2's read-back against RX1's, not the request
+    rx2 = all(x[3] == fs1_rb[x[2]] for x in sel("fs_rx2_hz") if isfinite(x[3]))
     summ!(ctx, "readback", "RX2 sample rate equals RX1", rx2 ? "yes" : "no", "every rate", spec = "equal (SP-02)", result = pf(rx2))
     gs = [x for x in vcat(sel("gain1_db"), sel("gain2_db")) if isfinite(x[3])]
     gmax = maximum(x[3] for x in gs); gerr = maximum(abs(x[4]) for x in gs if x[2] <= gmax)
@@ -318,7 +319,8 @@ end
 # ---------------------------------------------------------------------
 # Bins belonging to the source: the tone, its image, the Pluto+ LO leakage and the Pluto+ image.
 function source_lines(sc::StressCfg, tone_bb)
-    txlo = sc.tone_hz - sc.tone_offset - sc.f_tx_lo
+    err = tone_bb - (sc.tone_hz - sc.f_tx_lo)                     # reference offset between the two Plutos (about 17 kHz seen)
+    txlo = sc.tone_hz - sc.tone_offset - sc.f_tx_lo + err
     return [tone_bb, -tone_bb, txlo, 2txlo - tone_bb]
 end
 
@@ -664,7 +666,10 @@ function draw_figures(out, files)
         Pl.plot!(p1, g, num(c, "noise1_dbfs_bin"), label = "noise per bin RX1")
         cl = findall(x -> x > 1e-3, max.(num(c, "clip1"), num(c, "clip2")))
         isempty(cl) || Pl.vline!(p1, [g[cl[1]]], color = :red, ls = :dot, label = "clipping")
-        p2 = Pl.plot(g, -num(c, "image_dbc"), marker = :circle, label = "image rejection", xlabel = "Gain (dB)", ylabel = "dB", title = "Spectral purity (RX1)")
+        nl = num(c, "image_noise_limited") .== 1                  # image below the noise: only the SNR bound is known
+        p2 = Pl.plot(xlabel = "Gain (dB)", ylabel = "dB", title = "Spectral purity (RX1)")
+        any(.!nl) && Pl.scatter!(p2, g[.!nl], -num(c, "image_dbc")[.!nl], marker = :circle, label = "image rejection")
+        any(nl) && Pl.scatter!(p2, g[nl], num(c, "snr1_db")[nl], marker = :utriangle, mc = :white, label = "image below noise (rejection > this)")
         Pl.plot!(p2, g, -num(c, "sfdr_dbc"), marker = :diamond, label = "spurious-free range")
         Pl.plot!(p2, g, num(c, "snr1_db"), label = "tone SNR (7 bins)")
         sv(Pl.plot(p1, p2, layout = (1, 2), size = (900, 350)), "fig_levels.pdf")
@@ -675,8 +680,8 @@ function draw_figures(out, files)
         p2 = Pl.plot(xlabel = "Baseband frequency (kHz)", ylabel = "Phase (deg)", title = "Cross-spectrum phase")
         for gg in unique(g)
             i = findall(k -> g[k] == gg && inb[k], eachindex(g))
-            Pl.scatter!(p1, f[i], num(c, "rho_abs")[i], ms = 1, msw = 0, label = "measured, $(Int(gg)) dB")
             Pl.plot!(p1, f[i], num(c, "rho_pred")[i], lw = 1.5, label = "predicted from autos, $(Int(gg)) dB")
+            Pl.scatter!(p1, f[i], num(c, "rho_abs")[i], ms = 1.5, msw = 0, label = "measured, $(Int(gg)) dB")      # on top of the prediction
             Pl.scatter!(p2, f[i], num(c, "rho_deg")[i], ms = 1, msw = 0, label = "$(Int(gg)) dB")
         end
         sv(Pl.plot(p1, p2, layout = (1, 2), size = (900, 350)), "fig_coherence.pdf")

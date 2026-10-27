@@ -34,12 +34,6 @@ Base.@kwdef mutable struct ViewCfg
     snapshot::String   = ""          # save a PNG of the whole file and exit
 end
 
-function newest_vis(dir)
-    isdir(dir) || return ""
-    files = filter(f -> endswith(f, ".vis"), readdir(dir; join = true))
-    return isempty(files) ? "" : last(sort(files, by = mtime))
-end
-
 # Everything known about the file being shown.
 mutable struct ViewState
     path::String
@@ -198,10 +192,10 @@ end
 
 function main(args)
     vc = ViewCfg(); P.apply_kv!(args, vc)
-    path = isempty(vc.path) ? newest_vis(vc.dir) : vc.path
+    path = isempty(vc.path) ? P.newest_vis(vc.dir) : vc.path
     while isempty(path)
         println("No .vis in $(vc.dir) yet; waiting for a run to start..."); sleep(2)
-        path = newest_vis(vc.dir)
+        path = P.newest_vis(vc.dir)
     end
     st = open_state(path, vc)
     fig, o, axes = build_figure(vc)
@@ -223,7 +217,7 @@ function main(args)
             refresh!(o, axes, st, vc)
         end
         if isempty(vc.path) && vc.follow_new
-            p = newest_vis(vc.dir)
+            p = P.newest_vis(vc.dir)
             if !isempty(p) && p != st.path
                 println("New run: ", p)
                 st = open_state(p, vc)

@@ -18,12 +18,10 @@
 # Convention as in pluto_interferometer.jl: V = x1*conj(x2); positive phase = the signal reaches RX2 later (source on the RX1 side).
 # =====================================================================
 
-const V1_FILE = let a = joinpath(@__DIR__, "pluto_interferometer.jl"), b = joinpath(@__DIR__, "Previous", "pluto_interferometer.jl")
-    isfile(a) ? a : b
-end
-include(V1_FILE)     # Config, open_verified, read_block!, FX, tone_fit, ...; V1's main() only runs when pluto_interferometer.jl is the script
-
-using LinearAlgebra
+include(joinpath(@__DIR__, "..", "FINAL", "src", "PlutoIF.jl"))     # the radio, correlator and helpers shared with FINAL
+using .PlutoIF: Config, C_LIGHT, wrap180, wrap_pi, unwrap_deg, circ_stats, parse_list, apply_kv!, open_verified, close_radio!,
+                read_block!, block_geometry, FX, accumulate!, finalize!, detect_fullscale, to_complex, chan_stats, tone_fit, band_keep
+using Dates, Printf, Statistics, Random, LinearAlgebra
 
 Base.@kwdef mutable struct ArcCfg
     B_m::Float64            = NaN          # antenna spacing, centre to centre, measured with a tape (m)
@@ -38,6 +36,7 @@ Base.@kwdef mutable struct ArcCfg
     drift::Bool             = true         # fit: remove the instrument-phase drift by interpolating the broadside references
     pass_b_pct::Float64     = 5.0          # pass: fitted B within this % of the tape value (or 3 sigma, whichever is larger)
     pass_rms_deg::Float64   = 20.0         # pass: residual rms below this (deg)
+    skip_blocks::Int        = 2            # capture: blocks discarded before each point
 end
 
 const ARC_USAGE = """
@@ -50,19 +49,9 @@ Set the generator to f_lo + 100 to 300 kHz (clear of the DC spike). Never 1400-1
 
 function parse_arc_cli(args::Vector{String})
     isempty(args) && (println(ARC_USAGE); exit(0))
-    cfg = Config(); ac = ArcCfg()
-    for a in args[2:end]
-        occursin('=', a) || error("Bad argument '$a' (expected key=value)")
-        k, v = split(a, '='; limit = 2)
-        sym = Symbol(k)
-        obj = hasfield(ArcCfg, sym) ? ac : hasfield(Config, sym) ? cfg : error("Unknown option '$k'")
-        T = fieldtype(typeof(obj), sym)
-        val = T == String  ? String(v) :
-              T == Bool    ? (lowercase(v) in ("1", "true", "yes", "on")) :
-              T <: Integer ? round(T, parse(Float64, v)) :
-                             parse(T, v)
-        setfield!(obj, sym, val)
-    end
+    cfg = Config(quad_track = -1, rf_dc_track = -1, bb_dc_track = -1)      # tracking loops left as found, as in the original arc test
+    ac = ArcCfg()
+    apply_kv!(args[2:end], ac, cfg)
     return args[1], cfg, ac
 end
 
@@ -76,17 +65,7 @@ function path_diff(theta_deg::Real, B::Real, R::Real)
 end
 pred_phase_deg(theta_deg, B, R, lam) = 360 * path_diff(theta_deg, B, R) / lam
 farfield_phase_deg(theta_deg, B, lam) = 360 * B * sind(theta_deg) / lam
-wrap180(x) = mod(x + 180, 360) - 180
 chord_cm(theta_deg, R) = 200R * sind(abs(theta_deg) / 2)      # straight-line distance from the theta = 0 mark (cm)
-
-function parse_angles(s::AbstractString)
-    if occursin(':', s)
-        p = parse.(Float64, split(s, ':'))
-        length(p) == 3 || error("angles must be start:step:stop or a comma-separated list")
-        return collect(p[1]:p[2]:p[3])
-    end
-    return parse.(Float64, split(s, ','))
-end
 
 function check_geometry(ac::ArcCfg)
     isfinite(ac.B_m) && ac.B_m > 0 || error("Give B_m= (antenna spacing, centre to centre, from a tape), e.g. B_m=0.25")
@@ -110,7 +89,7 @@ function arc_predict(cfg::Config, ac::ArcCfg)
     f = isfinite(ac.f_hz) ? ac.f_hz : cfg.f_lo + 200e3
     check_band(f)
     lam = C_LIGHT / f; B = ac.B_m; R = ac.R_m
-    th = parse_angles(ac.angles)
+    th = parse_list(ac.angles)
     nf = 2B^2 / lam
     slope = 360 * B / lam * pi / 180                     # deg of phase per deg of angle at broadside
     swing = (pred_phase_deg(maximum(th), B, R, lam) - pred_phase_deg(minimum(th), B, R, lam)) / 360
@@ -144,13 +123,13 @@ const ARC_HEADER = "utc,tag,kind,theta_deg,R_m,B_m,f_lo_hz,f_bb_hz,f_true_hz,pha
 
 arc_file(cfg::Config, ac::ArcCfg) = isempty(ac.file) ? joinpath(cfg.out_dir, "arc_results.csv") : ac.file
 
-# Adapted from pluto_interferometer.jl's measure_tone (same tone phase and tone-window coherence). Adds the band-average coherence that the
+# The tone phase (RX1 - RX2) and the tone-window coherence at one position, plus the band-average coherence that the
 # low-signal run compares with SNR/(1+SNR), and a flag for a tone fit that locked onto the DC spike.
-function measure_point(r::Radio, cfg::Config, rb, secs::Float64)
+function measure_point(r, cfg::Config, rb, secs::Float64; skip_blocks::Int = 2)
     nsegb, bufsize = block_geometry(cfg)
     fs = Float64(rb.fs1); flo = Float64(rb.lo)
     nblk = max(2, ceil(Int, secs * fs / bufsize))
-    for _ in 1:cfg.skip_blocks; read_block!(r, 0); end
+    for _ in 1:skip_blocks; read_block!(r, 0); end
     fx = FX(cfg.nfft, nsegb, cfg.window)
     ph = Float64[]; fts = Float64[]; fsc = 0.0f0; clip = 0.0
     for _ in 1:nblk
@@ -168,11 +147,10 @@ function measure_point(r::Radio, cfg::Config, rb, secs::Float64)
     rec = finalize!(fx)
     fbb = median(fts)
     binw = fs / cfg.nfft
-    c = cfg.nfft ÷ 2 + 1
-    kt = clamp(round(Int, fbb / binw) + c, 5, cfg.nfft - 4)
+    kt = clamp(round(Int, fbb / binw) + cfg.nfft ÷ 2 + 1, 5, cfg.nfft - 4)
     win = (kt - 3):(kt + 3)
-    band = trues(cfg.nfft); band[max(1, c - cfg.dc_mask):min(cfg.nfft, c + cfg.dc_mask)] .= false   # band average: all but DC
-    noise = copy(band); noise[win] .= false                                                        # noise: also without the tone
+    band = band_keep(cfg.nfft, cfg.dc_mask)                 # band average: all but DC
+    noise = copy(band); noise[win] .= false                 # noise: also without the tone
     P1 = Float64.(rec.P1); P2 = Float64.(rec.P2)
     n1 = 7 * median(P1[noise]); n2 = 7 * median(P2[noise])
     t1 = max(sum(P1[win]) - n1, 1e-30); t2 = max(sum(P2[win]) - n2, 1e-30)
@@ -196,7 +174,7 @@ function write_arc_row(file, utc, tag, kind, theta, R, B, g1, g2, m)
 end
 
 function take_point(r, cfg::Config, ac::ArcCfg, rb, file, kind, theta, ref)
-    m = measure_point(r, cfg, rb, ac.secs)
+    m = measure_point(r, cfg, rb, ac.secs; ac.skip_blocks)
     write_arc_row(file, now(UTC), cfg.tag, kind, theta, ac.R_m, ac.B_m, rb.gain1, rb.gain2, m)
     @printf("  %s theta %+.1f: phase %.1f deg (sd %.1f, %d blocks), tone %+.1f kHz, SNR %.1f / %.1f dB, |rho| %.4f (expected %.4f), band |rho| %.4f (expected %.4f)\n",
             kind, theta, m.phase, m.phase_std, m.nblk, m.f_bb / 1e3, m.snr1_db, m.snr2_db, m.rho, m.rho_exp, m.rho_band, m.rho_band_exp)
@@ -220,7 +198,7 @@ end
 
 function arc_capture(cfg::Config, ac::ArcCfg)
     check_geometry(ac); check_band(cfg.f_lo)
-    angles = parse_angles(ac.angles)
+    angles = parse_list(ac.angles)
     isempty(cfg.tag) && (cfg.tag = Dates.format(now(), "mmdd-HHMM"))
     file = arc_file(cfg, ac)
     isdir(dirname(file)) || mkpath(dirname(file))
@@ -292,14 +270,6 @@ function read_arc_rows(path::String)
                      rho_band_exp = p(16), snr1 = p(17), snr2 = p(18)))
     end
     return rows
-end
-
-function unwrap_deg(p::Vector{Float64})
-    q = copy(p)
-    for i in 2:length(q)
-        q[i] = q[i-1] + wrap180(q[i] - q[i-1])
-    end
-    return q
 end
 
 function interp_clamped(tx::Vector{Float64}, px::Vector{Float64}, t::Float64)

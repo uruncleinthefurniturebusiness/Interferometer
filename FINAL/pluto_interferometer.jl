@@ -13,7 +13,8 @@
 #   show       one line per record of a .vis file (path=..., default the newest in out_dir)
 #   sim        no hardware: a simulated observation (Sun, disk, Gaussian or point source on the baseline) through the
 #              same correlator, checked against its own expectation; writes .vis, .meta and .truth.csv
-#   (none)     a menu: the same modes from a prompt, with the current settings on screen
+#   (none)     a menu: the same modes from a prompt, with the current settings on screen; v opens viewer.jl in its own
+#              process (its window survives Ctrl-C at the menu)
 #
 # Examples
 #   julia -t 3 pluto_interferometer.jl                       (menu)
@@ -49,26 +50,32 @@ Options: Config and GeoCfg in src/config.jl, SimCfg in src/sim.jl."""
 # ---------------------------------------------------------------------
 const CSV_HEAD = "rec,utc_start,utc_end,flags,pow1,pow2,clip1,clip2,rho_abs,rho_deg,rho_dc_abs,rho_dc_deg,lag_ms"
 const CSV_GEO  = ",ha_deg,dec_deg,alt_deg,u,v,w,tau_ns,fringe_mhz,rho_fs_abs,rho_fs_deg,disk_pred"
+const RECORD_LAYOUT = "Float64 t_start, Float64 t_end, Int32 nseg, UInt32 flags, Float32 pow1, pow2, clip1, clip2, then ComplexF32 V[nfft], Float32 P1[nfft], Float32 P2[nfft]; fftshifted (DC at nfft/2+1)"
+const FLAGS_DOC = "1 clip, 2 low power, 4 short read, 8 queue full"
+
+# Output files are <out_dir>/PI_<utc>[_tag][suffix].*
+function out_base(cfg::P.Config, suffix::String)
+    isdir(cfg.out_dir) || mkpath(cfg.out_dir)
+    return joinpath(cfg.out_dir, "PI_" * Dates.format(now(UTC), "yyyymmdd_HHMMSS") * (isempty(cfg.tag) ? "" : "_" * cfg.tag) * suffix)
+end
+
+# The first lines of every .meta file.
+meta_head(cfg::P.Config, mode) = ["software" => P.SOFTWARE, "mode" => mode, "start_utc" => string(now(UTC)),
+    "nfft" => cfg.nfft, "window" => cfg.window, "t_int_requested_s" => cfg.t_int, "dc_mask" => cfg.dc_mask]
 
 function start_meta(base, cfg, geo, rb, mode)
-    P.write_meta(base * ".meta", [
-        "software" => P.SOFTWARE, "mode" => mode, "start_utc" => string(now(UTC)),
-        "nfft" => cfg.nfft, "window" => cfg.window, "t_int_requested_s" => cfg.t_int, "dc_mask" => cfg.dc_mask,
-        "fs_hz" => rb.fs1, "f_lo_hz" => rb.lo, "rf_bandwidth_hz" => rb.bw1, "gain1_db" => rb.gain1, "gain2_db" => rb.gain2,
-        "tracking_rx1_rx2" => "quadrature $(rb.quad), rf_dc $(rb.rfdc), bb_dc $(rb.bbdc)",
-        "target" => geo.target, "lat_deg" => geo.lat_deg, "lon_deg" => geo.lon_deg, "baseline_m" => geo.baseline_m,
-        "baseline_az_deg" => geo.baseline_az_deg, "cable_delay_ns" => geo.cable_delay_ns, "diam_arcmin" => geo.diam_arcmin,
-        "convention" => P.CONVENTION,
-        "record_layout" => "Float64 t_start, Float64 t_end, Int32 nseg, UInt32 flags, Float32 pow1, pow2, clip1, clip2, then ComplexF32 V[nfft], Float32 P1[nfft], Float32 P2[nfft]; fftshifted (DC at nfft/2+1)",
-        "flags" => "1 clip, 2 low power, 4 short read, 8 queue full"])
+    P.write_meta(base * ".meta", [meta_head(cfg, mode);
+        "fs_hz" => rb.fs1; "f_lo_hz" => rb.lo; "rf_bandwidth_hz" => rb.bw1; "gain1_db" => rb.gain1; "gain2_db" => rb.gain2;
+        "tracking_rx1_rx2" => "quadrature $(rb.quad), rf_dc $(rb.rfdc), bb_dc $(rb.bbdc)";
+        "target" => geo.target; "lat_deg" => geo.lat_deg; "lon_deg" => geo.lon_deg; "baseline_m" => geo.baseline_m;
+        "baseline_az_deg" => geo.baseline_az_deg; "cable_delay_ns" => geo.cable_delay_ns; "diam_arcmin" => geo.diam_arcmin;
+        "convention" => P.CONVENTION; "record_layout" => RECORD_LAYOUT; "flags" => FLAGS_DOC])
 end
 
 # Everything after the radio is open: files, the per-record handler, the threaded capture, the summary.
 function run_core(cfg::P.Config, geo::P.GeoCfg, r, rb; mode = "run", quiet = false)
     fs = Float64(rb.fs1); f_lo = Float64(rb.lo)
-    isdir(cfg.out_dir) || mkpath(cfg.out_dir)
-    base = joinpath(cfg.out_dir, "PI_" * Dates.format(now(UTC), "yyyymmdd_HHMMSS") * (isempty(cfg.tag) ? "" : "_" * cfg.tag) *
-                                 (mode == "fake" ? "_FAKE" : ""))
+    base = out_base(cfg, mode == "fake" ? "_FAKE" : "")
     start_meta(base, cfg, geo, rb, mode)
     vis = open(base * ".vis", "w"); csv = open(base * ".csv", "w")
     sun = geo.target == "sun"
@@ -180,20 +187,13 @@ end
 # ---------------------------------------------------------------------
 # show
 # ---------------------------------------------------------------------
-function newest_vis(dir)
-    files = filter(f -> endswith(f, ".vis"), readdir(dir; join = true))
-    isempty(files) && error("No .vis files in $dir")
-    return last(sort(files, by = mtime))
-end
-
 function mode_show(cfg::P.Config)
-    path = isempty(cfg.path) ? newest_vis(cfg.out_dir) : cfg.path
-    meta = P.read_meta(P.meta_path(path))
-    nfft = parse(Int, meta["nfft"])
-    recs = P.read_records(path, nfft)
-    println("$path: $(length(recs)) records, nfft $nfft, fs $(meta["fs_hz"]) Hz, LO $(meta["f_lo_hz"]) Hz, target $(get(meta, "target", "?"))")
-    for (i, rec) in enumerate(recs)
-        sm = P.summarize(rec, parse(Int, get(meta, "dc_mask", "4")))
+    path = isempty(cfg.path) ? P.newest_vis(cfg.out_dir) : cfg.path
+    isempty(path) && error("No .vis files in $(cfg.out_dir)")
+    v = P.load_vis(path); meta = v.meta
+    println("$path: $(length(v.recs)) records, nfft $(v.nfft), fs $(meta["fs_hz"]) Hz, LO $(meta["f_lo_hz"]) Hz, target $(get(meta, "target", "?"))")
+    for (i, rec) in enumerate(v.recs)
+        sm = P.summarize(rec, v.dc_mask)
         @printf("%5d %s  |rho| %.4f ph %7.2f  P1 %.2e P2 %.2e  %s\n", i, Dates.format(unix2datetime(rec.t_start), "HH:MM:SS"),
                 abs(sm.rho), rad2deg(angle(sm.rho)), rec.pow1, rec.pow2, P.flagstr(rec.flags))
     end
@@ -203,17 +203,12 @@ end
 # sim (no hardware): the physics is in src/sim.jl; this writes the files and prints the records
 # ---------------------------------------------------------------------
 function mode_sim(cfg::P.Config, geo::P.GeoCfg, sc::P.SimCfg)
-    isdir(cfg.out_dir) || mkpath(cfg.out_dir)
-    base = joinpath(cfg.out_dir, "PI_" * Dates.format(now(UTC), "yyyymmdd_HHMMSS") * (isempty(cfg.tag) ? "" : "_" * cfg.tag) * "_SIM")
-    P.write_meta(base * ".meta", [
-        "software" => P.SOFTWARE, "mode" => "sim", "start_utc" => string(now(UTC)),
-        "nfft" => cfg.nfft, "window" => cfg.window, "t_int_requested_s" => cfg.t_int, "dc_mask" => cfg.dc_mask,
-        "fs_hz" => cfg.fs, "f_lo_hz" => cfg.f_lo, "target" => "none",
-        "lat_deg" => geo.lat_deg, "baseline_m" => geo.baseline_m, "baseline_az_deg" => geo.baseline_az_deg, "diam_arcmin" => geo.diam_arcmin,
-        (string(f) => getfield(sc, f) for f in fieldnames(P.SimCfg))...,
-        "convention" => P.CONVENTION,
-        "record_layout" => "as for run; record times are simulated, sim_step_s apart",
-        "flags" => "1 clip, 2 low power, 4 short read, 8 queue full"])
+    base = out_base(cfg, "_SIM")
+    P.write_meta(base * ".meta", [meta_head(cfg, "sim");
+        "fs_hz" => cfg.fs; "f_lo_hz" => cfg.f_lo; "target" => "none";
+        "lat_deg" => geo.lat_deg; "baseline_m" => geo.baseline_m; "baseline_az_deg" => geo.baseline_az_deg; "diam_arcmin" => geo.diam_arcmin;
+        [string(f) => getfield(sc, f) for f in fieldnames(P.SimCfg)];
+        "convention" => P.CONVENTION; "record_layout" => "as for run; record times are simulated, sim_step_s apart"; "flags" => FLAGS_DOC])
     vis = open(base * ".vis", "w"); csv = open(base * ".truth.csv", "w")
     println(csv, "rec,t_start_unix,hour_angle_deg,alt_deg,u,v,w,tau_ns,vnorm,beam,rho_exp_abs,rho_exp_deg,rho_abs,rho_deg,phase_err_deg")
     n = Ref(0)
@@ -390,12 +385,33 @@ function print_menu(cfg::P.Config, geo::P.GeoCfg)
     for (k, name, what) in MENU_ITEMS
         @printf("  %s  %-9s %s\n", k, name, what)
     end
+    println("  v  viewer    live display of the visibility in its own window, e.g. v avg=1 smooth=4")
     println("  s  set k=v   change settings, e.g. set gain1=30 gain2=30 (any command also takes k=v)")
-    println("  ?  status    every setting")     
+    println("  ?  status    every setting")
     println("  h  help ")
     println("  q  quit      exit this menu")
     println("  Enter  this menu      ")
-    println("Live display: julia viewer.jl in a second terminal. Ctrl-C stops a command and returns here.")
+    println("Open the viewer (v) before or during a run; it follows the newest run. Ctrl-C stops a command and returns here.")
+end
+
+# The live display in its own process (viewer.jl), so plotting never stalls the capture threads. detach() gives it its
+# own process group, so Ctrl-C at the menu does not close it; its messages go to viewer.log in out_dir.
+function launch_viewer(cfg::P.Config, args::Vector{String}, viewer::Ref{Any})
+    if viewer[] !== nothing && process_running(viewer[])
+        println("The viewer is already open. Close its window first to start it with other settings.")
+        return nothing
+    end
+    isdir(cfg.out_dir) || mkpath(cfg.out_dir)
+    log = joinpath(cfg.out_dir, "viewer.log")
+    cmd = `$(Base.julia_cmd()) $(joinpath(@__DIR__, "viewer.jl")) dir=$(cfg.out_dir) $args`
+    io = open(log, "w")
+    viewer[] = try
+        run(pipeline(detach(cmd); stdout = io, stderr = io); wait = false)
+    finally
+        close(io)
+    end
+    println("Viewer starting in its own window (the first start takes a while to compile). Messages: $log")
+    return nothing
 end
 
 function print_status(cfg::P.Config, geo::P.GeoCfg, sc::P.SimCfg)
@@ -407,9 +423,10 @@ end
 # One command at a time: a run blocks the prompt, so no other code is compiled while the capture threads run.
 function menu(cfg::P.Config, geo::P.GeoCfg, sc::P.SimCfg)
     bykey = Dict(k => name for (k, name, _) in MENU_ITEMS)
+    viewer = Ref{Any}(nothing)
     print_menu(cfg, geo)
     while true
-        print("\n[1-6, s, ?, h, q] > ")
+        print("\n[1-6, v, s, ?, h, q] > ")
         line = try
             eof(stdin) ? "q" : readline()
         catch e
@@ -420,6 +437,14 @@ function menu(cfg::P.Config, geo::P.GeoCfg, sc::P.SimCfg)
         isempty(words) && (print_menu(cfg, geo); continue)
         c = lowercase(words[1])
         c in ("q", "quit", "exit") && break
+        if c in ("v", "view", "viewer")              # its key=value options are the viewer's, not ours
+            try
+                launch_viewer(cfg, words[2:end], viewer)
+            catch e
+                println("ERROR: ", sprint(showerror, e))
+            end
+            continue
+        end
         try
             P.apply_kv!(words[2:end], cfg, geo, sc)
             if c in ("s", "set")
